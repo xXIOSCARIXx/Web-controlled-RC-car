@@ -14,6 +14,8 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,6 +47,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.SharedPreferences
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.remember
 import androidx.core.content.ContextCompat
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.hoho.android.usbserial.driver.UsbSerialDriver
@@ -70,6 +79,15 @@ class MainActivity : ComponentActivity() {
     private var cameraProvider: ProcessCameraProvider? = null
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
+    private var wsStatus by mutableStateOf("WS: not connected")
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var reconnectAttempt = 0
+    private var activityDestroyed = false
+
+    private lateinit var prefs: SharedPreferences
+    private var serverIp by mutableStateOf("")
+    private var showIpDialog by mutableStateOf(false)
+
     @Volatile
     private var serial: UsbCdcSerial? = null
     private val usbReadExecutor = Executors.newSingleThreadExecutor()
@@ -86,7 +104,7 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) startStreaming()
+        if (granted) checkPermissionAndStart()
     }
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -121,7 +139,14 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
-        checkPermissionAndStart()
+        prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        serverIp = prefs.getString("server_ip", "") ?: ""
+
+        if (serverIp.isBlank()) {
+            showIpDialog = true
+        } else {
+            checkPermissionAndStart()
+        }
         connectUsb()
 
         setContent {
@@ -134,6 +159,15 @@ class MainActivity : ComponentActivity() {
                             .padding(12.dp)
                     ) {
                         Text(
+                            text = wsStatus,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Color(0xFF888888),
+                            modifier = Modifier
+                                .padding(bottom = 6.dp)
+                                .clickable { showIpDialog = true }
+                        )
+                        Text(
                             text = usbStatus,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
@@ -143,12 +177,26 @@ class MainActivity : ComponentActivity() {
                         BarRow(label = "Steer", value = steerDisplay)
                         BarRow(label = "Throt", value = throttleDisplay)
                     }
+
+                    if (showIpDialog) {
+                        IpAddressDialog(
+                            initial = serverIp,
+                            onConfirm = { ip ->
+                                serverIp = ip.trim()
+                                prefs.edit().putString("server_ip", serverIp).apply()
+                                showIpDialog = false
+                                checkPermissionAndStart()
+                            },
+                            onDismiss = { showIpDialog = false }
+                        )
+                    }
                 }
             }
         }
     }
 
     private fun checkPermissionAndStart() {
+        if (serverIp.isBlank()) { showIpDialog = true; return }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) startStreaming()
@@ -156,13 +204,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startStreaming() {
+        reconnectHandler.removeCallbacksAndMessages(null)
         webSocket?.close(1000, null)
         webSocket = null
+        wsStatus = "WS: connecting"
         val request = Request.Builder()
-            .url("ws://192.168.1.100:3000?role=publisher")
+            .url("ws://$serverIp?role=publisher")
             .build()
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = bindCamera()
+        val newSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                reconnectAttempt = 0
+                runOnUiThread { wsStatus = "WS: connected" }
+                bindCamera()
+            }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = try { JSONObject(text) } catch (e: Exception) { return }
@@ -186,9 +240,30 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {}
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {}
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (this@MainActivity.webSocket !== webSocket) return
+                runOnUiThread { wsStatus = "WS: disconnected, retrying" }
+                scheduleReconnect()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (this@MainActivity.webSocket !== webSocket) return
+                runOnUiThread { wsStatus = "WS: connection lost, retrying" }
+                scheduleReconnect()
+            }
         })
+        webSocket = newSocket
+    }
+
+    private fun scheduleReconnect() {
+        if (activityDestroyed) return
+        val delayMs = (RECONNECT_BASE_DELAY_MS * (1L shl reconnectAttempt.coerceAtMost(6)))
+            .coerceAtMost(RECONNECT_MAX_DELAY_MS)
+        reconnectAttempt++
+        reconnectHandler.removeCallbacksAndMessages(null)
+        reconnectHandler.postDelayed({
+            if (!activityDestroyed) startStreaming()
+        }, delayMs)
     }
 
     private fun connectUsb() {
@@ -301,6 +376,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        activityDestroyed = true
+        reconnectHandler.removeCallbacksAndMessages(null)
         cameraProvider?.unbindAll()
         webSocket?.close(1000, null)
         serial?.write(byteArrayOf(COMMAND_CENTER))
@@ -316,6 +393,8 @@ class MainActivity : ComponentActivity() {
         const val BAUD_RATE = 115200
         const val READ_TIMEOUT_MS = 20
         const val DRIVE_KEEPALIVE_MS = 200L
+        const val RECONNECT_BASE_DELAY_MS = 1000L
+        const val RECONNECT_MAX_DELAY_MS = 15_000L
         const val COMMAND_DRIVE = 'D'.code.toByte()
         const val COMMAND_CENTER = 'C'.code.toByte()
         const val ACK_BYTE = 'A'.code.toByte()
@@ -347,6 +426,37 @@ class UsbCdcSerial private constructor(
             }
         }
     }
+}
+
+@Composable
+fun IpAddressDialog(initial: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Server address", fontFamily = FontFamily.Monospace) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("host:port", fontFamily = FontFamily.Monospace, fontSize = 11.sp) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp
+                )
+            )
+        },
+        confirmButton = {
+            Button(onClick = { if (text.isNotBlank()) onConfirm(text) }) {
+                Text("Connect")
+            }
+        },
+        dismissButton = {
+            if (initial.isNotBlank()) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        }
+    )
 }
 
 @Composable
