@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ShadowScoutX Live</title>
+    <style>
+        html, body {
+            margin: 0;
+            background: #000;
+            height: 100%;
+        }
+        #stream {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            display: block;
+            background: #000;
+        }
+        #stream:fullscreen {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+        #hud {
+            position: fixed;
+            left: 12px;
+            bottom: 12px;
+            padding: 10px 12px;
+            min-width: 200px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.55);
+            color: #ddd;
+            font: 12px/1.6 monospace;
+            pointer-events: none;
+        }
+        #gp-status { color: #888; }
+        #gp-status.on { color: #6f6; }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .bar-row span { width: 36px; }
+        .bar-track {
+            position: relative;
+            flex: 1;
+            height: 6px;
+            background: #333;
+        }
+        .bar-fill {
+            position: absolute;
+            top: 0;
+            height: 6px;
+            background: #6cf;
+        }
+        .bar-row em {
+            width: 42px;
+            text-align: right;
+            font-style: normal;
+        }
+    </style>
+</head>
+<body>
+<img id="stream">
+<div id="hud">
+    <div id="gp-status">Gamepad: none</div>
+    <div id="bar-steer" class="bar-row">
+        <span>Steer</span>
+        <div class="bar-track"><div class="bar-fill" id="fill-steer"></div></div>
+        <em id="val-steer">0.00</em>
+    </div>
+    <div id="bar-throttle" class="bar-row">
+        <span>Throt</span>
+        <div class="bar-track"><div class="bar-fill" id="fill-throttle"></div></div>
+        <em id="val-throttle">0.00</em>
+    </div>
+</div>
+<script>
+    const img = document.getElementById('stream');
+    img.addEventListener('click', () => {
+        document.fullscreenElement ? document.exitFullscreen() : img.requestFullscreen();
+    });
+
+    const ws = new WebSocket(`ws://${location.host}?role=viewer`);
+    ws.binaryType = 'arraybuffer';
+    let currentUrl = null;
+    ws.onmessage = (event) => {
+        if (typeof event.data === 'string') return;
+        const blob = new Blob([event.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        img.src = url;
+        if (currentUrl) URL.revokeObjectURL(currentUrl);
+        currentUrl = url;
+    };
+
+    const DEADZONE    = 0.08;
+    const KEEPALIVE_MS = 100;
+
+    const statusEl  = document.getElementById('gp-status');
+    const fillSteer = document.getElementById('fill-steer');
+    const valSteer  = document.getElementById('val-steer');
+    const fillThrot = document.getElementById('fill-throttle');
+    const valThrot  = document.getElementById('val-throttle');
+
+    const dz = (v) => Math.abs(v) < DEADZONE ? 0 : v;
+    const q  = (v) => Math.round(v * 1000) / 1000;
+
+    const activePad = () => {
+        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (const pad of pads) if (pad && pad.connected) return pad;
+        return null;
+    };
+
+    let lastJSON   = '';
+    let lastSentAt = 0;
+
+    setInterval(() => {
+        const pad = activePad();
+
+        if (!pad) {
+            if (statusEl.className) {
+                statusEl.className = '';
+                statusEl.textContent = 'Gamepad: none';
+            }
+            const payload = '{"type":"gamepad","connected":false}';
+            if (lastJSON !== payload && ws.readyState === WebSocket.OPEN) {
+                ws.send(payload);
+                lastJSON = payload;
+            }
+            return;
+        }
+
+        const steer    = q(dz(pad.axes[0] ?? 0));
+        const l2       = q(pad.buttons[6]?.value ?? 0);
+        const r2       = q(pad.buttons[7]?.value ?? 0);
+        const throttle = q(Math.max(-1, Math.min(1, r2 - l2)));
+
+        if (!statusEl.className) {
+            statusEl.className = 'on';
+            statusEl.textContent = `Gamepad: ${pad.id}`;
+        }
+        fillSteer.style.left  = steer < 0 ? `${50 + steer * 50}%` : '50%';
+        fillSteer.style.width = `${Math.abs(steer) * 50}%`;
+        valSteer.textContent  = steer.toFixed(2);
+        fillThrot.style.left  = throttle < 0 ? `${50 + throttle * 50}%` : '50%';
+        fillThrot.style.width = `${Math.abs(throttle) * 50}%`;
+        valThrot.textContent  = throttle.toFixed(2);
+
+        if (ws.readyState !== WebSocket.OPEN) return;
+
+        const now     = performance.now();
+        const payload = JSON.stringify({
+            type: 'gamepad',
+            connected: true,
+            id: pad.id,
+            mapping: pad.mapping,
+            axes: Array.from(pad.axes, (v, i) => i === 0 ? steer : 0),
+            buttons: pad.buttons.map((b, i) => i === 6 ? l2 : i === 7 ? r2 : 0),
+            pressed: [],
+        });
+
+        if (payload === lastJSON && now - lastSentAt < KEEPALIVE_MS) return;
+        ws.send(payload);
+        lastJSON   = payload;
+        lastSentAt = now;
+    }, 20);
+</script>
+</body>
+</html>
