@@ -1,4 +1,4 @@
-# ShadowScoutX
+# Web controlled RC car
 
 A low-latency FPV rover platform that streams live video from an Android
 phone while receiving remote gamepad commands through a WebSocket
