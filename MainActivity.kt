@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
     private val client = OkHttpClient.Builder().build()
     private var cameraProvider: ProcessCameraProvider? = null
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private var useFrontCamera = false
 
     private var wsStatus by mutableStateOf("WS: not connected")
     private val reconnectHandler = Handler(Looper.getMainLooper())
@@ -220,6 +221,11 @@ class MainActivity : ComponentActivity() {
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val json = try { JSONObject(text) } catch (e: Exception) { return }
+                if (json.optString("type") == "toggle_camera") {
+                    useFrontCamera = !useFrontCamera
+                    runOnUiThread { bindCamera() }
+                    return
+                }
                 if (json.optString("type") != "gamepad" || !json.optBoolean("connected")) return
                 val axes = json.optJSONArray("axes")
                 val buttons = json.optJSONArray("buttons")
@@ -271,6 +277,7 @@ class MainActivity : ComponentActivity() {
         val driver = UsbSerialProber.getDefaultProber().findAllDrivers(manager).firstOrNull()
         if (driver == null) { usbStatus = "USB: no device found"; return }
         val device = driver.device
+        if (serial?.deviceName == device.deviceName) return
         if (manager.hasPermission(device)) { openSerial(device); return }
         usbStatus = "USB: requesting permission"
         val pi = PendingIntent.getBroadcast(
@@ -343,8 +350,9 @@ class MainActivity : ComponentActivity() {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analysis.setAnalyzer(cameraExecutor) { imageProxy -> sendFrame(imageProxy) }
+            val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
             cameraProvider?.unbindAll()
-            cameraProvider?.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+            cameraProvider?.bindToLifecycle(this, selector, analysis)
         }, ContextCompat.getMainExecutor(this))
     }
 
