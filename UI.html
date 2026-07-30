@@ -66,7 +66,10 @@
     <div id="gp-status">Gamepad: none</div>
     <div id="bar-steer" class="bar-row">
         <span>Steer</span>
-        <div class="bar-track"><div class="bar-fill" id="fill-steer"></div></div>
+        <div class="bar-track">
+            <div class="bar-fill" id="fill-steer"></div>
+            <div class="bar-fill" id="fill-trim" style="background:#f44;"></div>
+        </div>
         <em id="val-steer">0.00</em>
     </div>
     <div id="bar-throttle" class="bar-row">
@@ -93,17 +96,21 @@
         currentUrl = url;
     };
 
-    const DEADZONE    = 0.08;
+    const DEADZONE     = 0.08;
     const KEEPALIVE_MS = 100;
+    const TRIM_STEP    = 0.01;
+    const TRIM_MAX     = 1.0;
 
     const statusEl  = document.getElementById('gp-status');
     const fillSteer = document.getElementById('fill-steer');
     const valSteer  = document.getElementById('val-steer');
     const fillThrot = document.getElementById('fill-throttle');
     const valThrot  = document.getElementById('val-throttle');
+    const fillTrim  = document.getElementById('fill-trim');
 
-    const dz = (v) => Math.abs(v) < DEADZONE ? 0 : v;
-    const q  = (v) => Math.round(v * 1000) / 1000;
+    const dz    = (v) => Math.abs(v) < DEADZONE ? 0 : v;
+    const q     = (v) => Math.round(v * 1000) / 1000;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
     const activePad = () => {
         const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -113,6 +120,9 @@
 
     let lastJSON   = '';
     let lastSentAt = 0;
+    let steerTrim  = 0;
+    let dpadPrev   = [false, false];
+    let bPrev      = false;
 
     setInterval(() => {
         const pad = activePad();
@@ -130,7 +140,21 @@
             return;
         }
 
-        const steer    = q(dz(pad.axes[0] ?? 0));
+        const dpadLeft  = !!(pad.buttons[14]?.pressed);
+        const dpadRight = !!(pad.buttons[15]?.pressed);
+        if (dpadLeft  && !dpadPrev[0]) steerTrim = clamp(steerTrim - TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+        if (dpadRight && !dpadPrev[1]) steerTrim = clamp(steerTrim + TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+        dpadPrev = [dpadLeft, dpadRight];
+        steerTrim = q(steerTrim);
+
+        const bPressed = !!(pad.buttons[1]?.pressed);
+        if (bPressed && !bPrev && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'toggle_camera' }));
+        }
+        bPrev = bPressed;
+
+        const rawSteer = q(dz(pad.axes[0] ?? 0));
+        const steer    = q(clamp(rawSteer + steerTrim, -1, 1));
         const l2       = q(pad.buttons[6]?.value ?? 0);
         const r2       = q(pad.buttons[7]?.value ?? 0);
         const throttle = q(Math.max(-1, Math.min(1, r2 - l2)));
@@ -139,8 +163,13 @@
             statusEl.className = 'on';
             statusEl.textContent = `Gamepad: ${pad.id}`;
         }
-        fillSteer.style.left  = steer < 0 ? `${50 + steer * 50}%` : '50%';
-        fillSteer.style.width = `${Math.abs(steer) * 50}%`;
+        const rawPct   = rawSteer * 50;
+        const trimPct  = steerTrim * 50;
+        fillSteer.style.left  = rawSteer < 0 ? `${50 + rawPct}%` : '50%';
+        fillSteer.style.width = `${Math.abs(rawPct)}%`;
+        const trimStart = 50 + rawPct;
+        fillTrim.style.left  = trimPct >= 0 ? `${trimStart}%` : `${trimStart + trimPct}%`;
+        fillTrim.style.width = `${Math.abs(trimPct)}%`;
         valSteer.textContent  = steer.toFixed(2);
         fillThrot.style.left  = throttle < 0 ? `${50 + throttle * 50}%` : '50%';
         fillThrot.style.width = `${Math.abs(throttle) * 50}%`;
