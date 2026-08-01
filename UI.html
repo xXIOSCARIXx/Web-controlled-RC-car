@@ -1,7 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>ShadowScoutX Live</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
         html, body {
             margin: 0;
@@ -11,16 +14,89 @@
         #stream {
             width: 100vw;
             height: 100vh;
-            object-fit: contain;
             display: block;
             background: #000;
         }
-        #stream:fullscreen {
+        #map-widget {
+            position: fixed;
+            right: 12px;
+            bottom: 12px;
+            width: 720px;
+            height: 600px;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #111;
+            border: 1px solid #2a2a2a;
+            display: block;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+            cursor: pointer;
+        }
+        #map-el {
             width: 100%;
             height: 100%;
-            object-fit: contain;
+            pointer-events: none;
+        }
+        #map-coords {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 3px 7px;
+            background: rgba(0,0,0,0.5);
+            color: #ccc;
+            font: 10px/1.5 monospace;
+            pointer-events: none;
+            z-index: 1000;
+            backdrop-filter: blur(2px);
+        }
+        #map-fullscreen {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
             background: #000;
         }
+        #map-fullscreen.open {
+            display: block;
+        }
+        #map-fs-el {
+            width: 100%;
+            height: 100%;
+        }
+        #map-fs-coords {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 5px 12px;
+            background: rgba(0,0,0,0.6);
+            color: #ccc;
+            font: 11px/1.5 monospace;
+            border-radius: 6px;
+            pointer-events: none;
+            z-index: 10000;
+            backdrop-filter: blur(3px);
+            white-space: nowrap;
+        }
+        #map-fs-close {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            z-index: 10000;
+            background: rgba(0,0,0,0.6);
+            border: 1px solid #444;
+            color: #ccc;
+            font: 14px/1 monospace;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(3px);
+        }
+        #map-fs-close:hover { background: rgba(255,255,255,0.15); }
         #hud {
             position: fixed;
             left: 12px;
@@ -58,10 +134,114 @@
             text-align: right;
             font-style: normal;
         }
+        #status-bar {
+            position: fixed;
+            top: 12px;
+            right: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .signal-widget {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+        }
+        .signal-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 18px;
+        }
+        .signal-bars .bar {
+            width: 4px;
+            border-radius: 1px;
+            background: #333;
+            transition: background 0.3s ease;
+        }
+        .signal-bars .bar:nth-child(1) { height: 5px; }
+        .signal-bars .bar:nth-child(2) { height: 8px; }
+        .signal-bars .bar:nth-child(3) { height: 12px; }
+        .signal-bars .bar:nth-child(4) { height: 18px; }
+        .signal-label {
+            font: bold 8px/1 monospace;
+            color: #888;
+            text-align: center;
+            letter-spacing: 0.5px;
+        }
+        #battery-widget {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            pointer-events: none;
+        }
+        #battery-shell {
+            position: relative;
+            width: 52px;
+            height: 24px;
+            border: 2px solid #888;
+            border-radius: 4px;
+            background: #111;
+            overflow: hidden;
+        }
+        #battery-shell::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 10px;
+            background: #888;
+            border-radius: 0 2px 2px 0;
+        }
+        #battery-fill {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0%;
+            border-radius: 2px;
+            background: #6f6;
+            transition: width 0.4s ease, background 0.4s ease;
+        }
+        #battery-label {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font: bold 10px/1 monospace;
+            color: #000;
+            text-shadow: none;
+            z-index: 1;
+        }
+        #car-battery-voltage {
+            font: bold 13px/1 monospace;
+            color: #6f6;
+        }
+        #car-battery-voltage.warn { color: #fa4; }
+        #car-battery-voltage.crit { color: #f44; }
+        #car-battery-usb {
+            font: 9px/1 monospace;
+            color: #888;
+        }
     </style>
 </head>
 <body>
-<img id="stream">
+<canvas id="stream"></canvas>
+<div id="map-widget">
+    <div id="map-el"></div>
+    <div id="map-coords">waiting for GPS...</div>
+</div>
+<div id="map-fullscreen">
+    <div id="map-fs-el"></div>
+    <div id="map-fs-coords"></div>
+    <button id="map-fs-close" title="Close">X</button>
+</div>
 <div id="hud">
     <div id="gp-status">Gamepad: none</div>
     <div id="bar-steer" class="bar-row">
@@ -78,22 +258,242 @@
         <em id="val-throttle">0.00</em>
     </div>
 </div>
+<div id="status-bar">
+    <div class="signal-widget" id="wifi-widget">
+        <svg id="wifi-svg" width="26" height="20" viewBox="0 0 26 20">
+            <path id="wifi-a3" d="M1.5 9 Q13 -1 24.5 9" fill="none" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+            <path id="wifi-a2" d="M5 13 Q13 6 21 13"  fill="none" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+            <path id="wifi-a1" d="M8.5 17 Q13 13 17.5 17" fill="none" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+            <circle id="wifi-dot" cx="13" cy="19.5" r="1.8" fill="#333"/>
+        </svg>
+        <div class="signal-label">WiFi</div>
+    </div>
+    <div class="signal-widget" id="cell-widget">
+        <div class="signal-bars" id="cell-bars">
+            <div class="bar" id="cell-b1"></div>
+            <div class="bar" id="cell-b2"></div>
+            <div class="bar" id="cell-b3"></div>
+            <div class="bar" id="cell-b4"></div>
+        </div>
+        <div class="signal-label">Cell</div>
+    </div>
+    <div id="battery-widget">
+        <div id="battery-shell">
+            <div id="battery-fill"></div>
+            <div id="battery-label"></div>
+        </div>
+        <div class="signal-label" id="battery-pct-label" style="color:#888;">Batt</div>
+    </div>
+</div>
+<div id="car-battery-widget" style="position:fixed;top:12px;left:12px;padding:6px 10px;border-radius:8px;background:rgba(0,0,0,0.55);pointer-events:none;">
+    <div id="car-battery-usb">No device</div>
+    <div id="car-battery-voltage">--.-V</div>
+</div>
 <script>
-    const img = document.getElementById('stream');
-    img.addEventListener('click', () => {
-        document.fullscreenElement ? document.exitFullscreen() : img.requestFullscreen();
+    const canvas = document.getElementById('stream');
+    const ctx = canvas.getContext('2d');
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+    window.addEventListener('resize', () => {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
     });
+    canvas.addEventListener('click', () => {
+        document.fullscreenElement ? document.exitFullscreen() : canvas.requestFullscreen();
+    });
+
+    const offscreen = new Image();
+    let pendingBlob = null;
+    let drawing = false;
+    let drawWatchdog = null;
+
+    function drawNext() {
+        if (!pendingBlob) { drawing = false; return; }
+        const blob = pendingBlob;
+        pendingBlob = null;
+        const url = URL.createObjectURL(blob);
+
+        clearTimeout(drawWatchdog);
+        drawWatchdog = setTimeout(() => {
+            URL.revokeObjectURL(url);
+            drawing = false;
+            if (pendingBlob) { drawing = true; drawNext(); }
+        }, 2000);
+
+        offscreen.onerror = () => {
+            clearTimeout(drawWatchdog);
+            URL.revokeObjectURL(url);
+            drawNext();
+        };
+        offscreen.onload = () => {
+            clearTimeout(drawWatchdog);
+            const iw = offscreen.naturalWidth;
+            const ih = offscreen.naturalHeight;
+            const scale = Math.min(canvas.width / iw, canvas.height / ih);
+            const dw = iw * scale;
+            const dh = ih * scale;
+            const dx = (canvas.width - dw) / 2;
+            const dy = (canvas.height - dh) / 2;
+            ctx.drawImage(offscreen, dx, dy, dw, dh);
+            URL.revokeObjectURL(url);
+            drawNext();
+        };
+        offscreen.src = url;
+    }
+
+    const batteryFill       = document.getElementById('battery-fill');
+    const batteryLabel      = document.getElementById('battery-label');
+    const carBatteryVoltage = document.getElementById('car-battery-voltage');
+    const carBatteryUsb     = document.getElementById('car-battery-usb');
+
+    function updateCarBattery(mv) {
+        const v = mv / 1000;
+        carBatteryVoltage.textContent = v.toFixed(2) + 'V';
+        carBatteryVoltage.className = v < 9.6 ? 'crit' : v < 10.5 ? 'warn' : '';
+    }
+
+    function updateWifi(level) {
+        const active = level < 2 ? '#f44' : '#6cf';
+        document.getElementById('wifi-dot').setAttribute('fill',   level >= 1 ? active : '#333');
+        document.getElementById('wifi-a1').setAttribute('stroke',  level >= 2 ? active : '#333');
+        document.getElementById('wifi-a2').setAttribute('stroke',  level >= 3 ? active : '#333');
+        document.getElementById('wifi-a3').setAttribute('stroke',  level >= 4 ? active : '#333');
+    }
+
+    function updateCell(level) {
+        const active = level < 2 ? '#f44' : '#6cf';
+        for (let i = 1; i <= 4; i++) {
+            document.getElementById(`cell-b${i}`).style.background =
+                i <= level ? active : '#333';
+        }
+    }
 
     const ws = new WebSocket(`ws://${location.host}?role=viewer`);
     ws.binaryType = 'arraybuffer';
-    let currentUrl = null;
+
+    const mapWidget   = document.getElementById('map-widget');
+    const mapCoords   = document.getElementById('map-coords');
+    const mapFsEl     = document.getElementById('map-fullscreen');
+    const mapFsCoords = document.getElementById('map-fs-coords');
+    const mapFsClose  = document.getElementById('map-fs-close');
+
+    const SAT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+    const SAT_OPTS  = { maxZoom: 19, attribution: '' };
+
+    const dotIcon = () => L.divIcon({
+        className: '',
+        html: '<div style="width:10px;height:10px;border-radius:50%;background:#4af;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.8)"></div>',
+        iconSize: [10, 10],
+        iconAnchor: [5, 5],
+    });
+
+    let miniMap    = null;
+    let miniMarker = null;
+    let miniCircle = null;
+    let miniLocked = true;
+
+    let fsMap    = null;
+    let fsMarker = null;
+    let fsCircle = null;
+    let fsOpen   = false;
+
+    function initMiniMap(lat, lng) {
+        miniMap = L.map('map-el', { zoomControl: false, attributionControl: false })
+            .setView([lat, lng], 17);
+        L.tileLayer(SAT_TILES, SAT_OPTS).addTo(miniMap);
+        miniMarker = L.marker([lat, lng], { icon: dotIcon() }).addTo(miniMap);
+        miniCircle = L.circle([lat, lng], { radius: 0, color: '#4af', fillColor: '#4af', fillOpacity: 0.1, weight: 1 }).addTo(miniMap);
+        miniMap.on('dragstart', () => { miniLocked = false; });
+    }
+
+    function initFsMap(lat, lng) {
+        fsMap = L.map('map-fs-el', { zoomControl: true, attributionControl: false })
+            .setView([lat, lng], 17);
+        L.tileLayer(SAT_TILES, SAT_OPTS).addTo(fsMap);
+        fsMarker = L.marker([lat, lng], { icon: dotIcon() }).addTo(fsMap);
+        fsCircle = L.circle([lat, lng], { radius: 0, color: '#4af', fillColor: '#4af', fillOpacity: 0.1, weight: 1 }).addTo(fsMap);
+    }
+
+    mapWidget.addEventListener('click', () => {
+        if (!miniMap) return;
+        const center = miniMap.getCenter();
+        const zoom   = miniMap.getZoom();
+        mapFsEl.classList.add('open');
+        fsOpen = true;
+        if (!fsMap) {
+            initFsMap(center.lat, center.lng);
+        } else {
+            fsMap.setView([center.lat, center.lng], zoom);
+            fsMap.invalidateSize();
+        }
+        if (miniMarker) {
+            const ll = miniMarker.getLatLng();
+            fsMarker.setLatLng(ll);
+            fsCircle.setLatLng(ll);
+            fsMap.setView(ll, zoom);
+        }
+    });
+
+    mapFsClose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        mapFsEl.classList.remove('open');
+        fsOpen = false;
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && fsOpen) {
+            mapFsEl.classList.remove('open');
+            fsOpen = false;
+        }
+    });
+
     ws.onmessage = (event) => {
-        if (typeof event.data === 'string') return;
-        const blob = new Blob([event.data], { type: 'image/jpeg' });
-        const url = URL.createObjectURL(blob);
-        img.src = url;
-        if (currentUrl) URL.revokeObjectURL(currentUrl);
-        currentUrl = url;
+        if (typeof event.data === 'string') {
+            let msg;
+            try { msg = JSON.parse(event.data); } catch { return; }
+            if (msg.type === 'car_battery') {
+                updateCarBattery(msg.mv);
+                return;
+            }
+            if (msg.type === 'usb_status') {
+                carBatteryUsb.textContent = msg.status;
+                return;
+            }
+            if (msg.type === 'battery') {
+                const level = msg.level;
+                batteryFill.style.width = level + '%';
+                batteryFill.style.background = level <= 15 ? '#f44' : level <= 30 ? '#fa4' : '#6f6';
+                batteryLabel.textContent = level + '%';
+            }
+            if (msg.type === 'wifi') {
+                updateWifi(msg.level);
+            }
+            if (msg.type === 'cell') {
+                updateCell(msg.level);
+            }
+            if (msg.type === 'gps') {
+                const { lat, lng, acc } = msg;
+                const ll = [lat, lng];
+                const coordStr = lat.toFixed(5) + ', ' + lng.toFixed(5) + '  +/-' + Math.round(acc) + 'm';
+                mapWidget.style.display = 'block';
+                mapCoords.textContent   = coordStr;
+                mapFsCoords.textContent = coordStr;
+                if (!miniMap) {
+                    initMiniMap(lat, lng);
+                } else {
+                    miniMarker.setLatLng(ll);
+                    miniCircle.setLatLng(ll).setRadius(acc);
+                    if (miniLocked) miniMap.panTo(ll, { animate: true, duration: 0.5 });
+                }
+                if (fsMap) {
+                    fsMarker.setLatLng(ll);
+                    fsCircle.setLatLng(ll).setRadius(acc);
+                }
+            }
+            return;
+        }
+        pendingBlob = new Blob([event.data], { type: 'image/jpeg' });
+        if (!drawing) { drawing = true; drawNext(); }
     };
 
     const DEADZONE     = 0.08;
@@ -122,6 +522,7 @@
     let lastSentAt = 0;
     let steerTrim  = 0;
     let dpadPrev   = [false, false];
+    let aPrev      = false;
     let bPrev      = false;
 
     setInterval(() => {
@@ -147,6 +548,12 @@
         dpadPrev = [dpadLeft, dpadRight];
         steerTrim = q(steerTrim);
 
+        const aPressed = !!(pad.buttons[0]?.pressed);
+        if (aPressed && !aPrev && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'toggle_torch' }));
+        }
+        aPrev = aPressed;
+
         const bPressed = !!(pad.buttons[1]?.pressed);
         if (bPressed && !bPrev && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'toggle_camera' }));
@@ -161,18 +568,18 @@
 
         if (!statusEl.className) {
             statusEl.className = 'on';
-            statusEl.textContent = `Gamepad: ${pad.id}`;
+            statusEl.textContent = 'Gamepad: ' + pad.id;
         }
         const rawPct   = rawSteer * 50;
         const trimPct  = steerTrim * 50;
-        fillSteer.style.left  = rawSteer < 0 ? `${50 + rawPct}%` : '50%';
-        fillSteer.style.width = `${Math.abs(rawPct)}%`;
+        fillSteer.style.left  = rawSteer < 0 ? (50 + rawPct) + '%' : '50%';
+        fillSteer.style.width = Math.abs(rawPct) + '%';
         const trimStart = 50 + rawPct;
-        fillTrim.style.left  = trimPct >= 0 ? `${trimStart}%` : `${trimStart + trimPct}%`;
-        fillTrim.style.width = `${Math.abs(trimPct)}%`;
+        fillTrim.style.left  = trimPct >= 0 ? trimStart + '%' : (trimStart + trimPct) + '%';
+        fillTrim.style.width = Math.abs(trimPct) + '%';
         valSteer.textContent  = steer.toFixed(2);
-        fillThrot.style.left  = throttle < 0 ? `${50 + throttle * 50}%` : '50%';
-        fillThrot.style.width = `${Math.abs(throttle) * 50}%`;
+        fillThrot.style.left  = throttle < 0 ? (50 + throttle * 50) + '%' : '50%';
+        fillThrot.style.width = Math.abs(throttle) * 50 + '%';
         valThrot.textContent  = throttle.toFixed(2);
 
         if (ws.readyState !== WebSocket.OPEN) return;
