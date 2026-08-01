@@ -1,4 +1,4 @@
-# Shadow Scout
+# Web Controlled FPV Car
 
 A low-latency remote-control system for an RC car with live video streaming, GPS tracking, and real-time telemetry — built from an Android phone, an Arduino, and a Node.js relay server.
 
