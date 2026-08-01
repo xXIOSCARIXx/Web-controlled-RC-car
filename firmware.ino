@@ -2,17 +2,20 @@
 
 const int STEER_PIN = 2;
 const int ESC_PIN = 3;
+const int BAT_PIN = A0;
 
 const int STEER_CENTER_US = 1500;
 const int ESC_NEUTRAL_US = 1500;
 
 const unsigned long COMMAND_TIMEOUT = 500;
 const unsigned long ARM_HOLD_MS = 2000;
+const unsigned long BAT_INTERVAL = 500;
 
-const float STEERING_EXPO = 0.80f;      // 0.80f = 80% smoothing
-const float THROTTLE_EXPO = 0.0f;       // 0.0f  = 0%  smoothing
-const float ESC_FORWARD_LIMIT = 0.25f;  // 0.25f = 25% of max speed
-const float ESC_BRAKE_LIMIT = 0.55f;    // 0.55f = 55% of max braking
+const float STEERING_EXPO = 0.80f;
+const float THROTTLE_EXPO = 0.0f;
+const float ESC_FORWARD_LIMIT = 0.25f;
+const float ESC_BRAKE_LIMIT = 0.55f;
+const float BAT_CALIBRATION = 0.9517f;
 
 Servo steerServo;
 Servo escServo;
@@ -25,6 +28,7 @@ bool escArmed = false;
 
 unsigned long armHoldStart = 0;
 unsigned long lastCommandTime = 0;
+unsigned long lastBatSend = 0;
 
 float applyExpo(float x, float expo) {
   return (1.0f - expo) * x + expo * x * x * x;
@@ -48,6 +52,13 @@ int applyExpoToPWM(byte input, bool reverse, float expo, float forwardLimit, flo
   int pwm = (int)(1500.0f + x * 500.0f);
 
   return constrain(pwm, 1000, 2000);
+}
+
+uint16_t readBatteryMillivolts() {
+  int raw = analogRead(BAT_PIN);
+  float vOut = (raw / 1023.0f) * 5.0f;
+  float vBat = vOut * (4.64f + 1.17f) / 1.17f * BAT_CALIBRATION;
+  return (uint16_t)(vBat * 1000.0f);
 }
 
 void setup() {
@@ -84,6 +95,15 @@ void loop() {
 
   steerServo.writeMicroseconds(steerTargetUs);
   escServo.writeMicroseconds(escTargetUs);
+
+  unsigned long now = millis();
+  if (now - lastBatSend >= BAT_INTERVAL) {
+    lastBatSend = now;
+    uint16_t bat_mv = readBatteryMillivolts();
+    Serial.write('B');
+    Serial.write((byte)(bat_mv >> 8));
+    Serial.write((byte)(bat_mv & 0xFF));
+  }
 }
 
 void updateArming() {
@@ -134,10 +154,6 @@ void readCommands() {
       } else {
         escTargetUs = ESC_NEUTRAL_US;
       }
-
-      Serial.write('A');
-      Serial.write(steerByte);
-      Serial.write(throttleByte);
     }
     else if (cmd == 'C') {
       Serial.read();
@@ -145,10 +161,6 @@ void readCommands() {
       lastCommandTime = millis();
       steerTargetUs = STEER_CENTER_US;
       escTargetUs = ESC_NEUTRAL_US;
-
-      Serial.write('A');
-      Serial.write((byte)128);
-      Serial.write((byte)128);
     }
     else {
       Serial.read();
