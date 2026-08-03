@@ -19,8 +19,7 @@ As long as the phone has mobile data and the relay server is reachable from the 
 ### Live Video Streaming
 - Camera frames are captured via CameraX, converted from YUV to NV21, JPEG-compressed at quality 75, and streamed as binary WebSocket frames to all connected viewers.
 - Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI.
-- Streaming automatically pauses when the phone receives a call and resumes afterwards.
-- Frame rate is throttle-limited to prevent saturating the connection.
+
 
 ### Live Audio Streaming
 - Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono) and streamed as binary frames interleaved with video, distinguished by a frame-type header byte (`0x01` = audio, anything else = video).
@@ -28,13 +27,14 @@ As long as the phone has mobile data and the relay server is reachable from the 
 
 ### Torch / Flashlight Control
 - The rear camera torch can be toggled remotely from the browser dashboard by pressing the **A button** on the gamepad, or via a button in the viewer UI.
+- The active camera (front/rear) can be switched mid-stream with the **B button**.
 - Torch state is managed through CameraX `Camera2CameraControl` capture request options.
 
 ### GPS Tracking
 - Uses Google's Fused Location Provider for high-accuracy GPS with a 1-second update interval.
 - Coordinates and accuracy are streamed as JSON to the relay server and forwarded to all viewers in real time.
 - The viewer displays a live satellite map (Leaflet.js + Esri World Imagery tiles) in the bottom-right corner with a position marker and an accuracy radius circle.
-- Clicking the mini-map expands it to a full-screen interactive map. The mini-map auto-follows the vehicle; dragging it unlocks auto-follow.
+- Clicking the mini-map expands it to a full-screen interactive map.
 - Coordinates are displayed in decimal degrees with ±accuracy in metres.
 
 ### Android Phone Telemetry (HUD)
