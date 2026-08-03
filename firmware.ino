@@ -1,10 +1,10 @@
 #include <Servo.h>
 
-const int STEER_PIN = 2;
-const int ESC_PIN = 3;
+const int STEER_PIN = 10;
+const int ESC_PIN = 9;
 const int BAT_PIN = A0;
 
-const int STEER_CENTER_US = 1500;
+const int STEER_CENTER_US = 1460;
 const int ESC_NEUTRAL_US = 1500;
 
 const unsigned long COMMAND_TIMEOUT = 500;
@@ -15,7 +15,7 @@ const float STEERING_EXPO = 0.80f;
 const float THROTTLE_EXPO = 0.0f;
 const float ESC_FORWARD_LIMIT = 0.25f;
 const float ESC_BRAKE_LIMIT = 0.55f;
-const float BAT_CALIBRATION = 0.9517f;
+const float BAT_CALIBRATION = 0.994f;
 
 Servo steerServo;
 Servo escServo;
@@ -34,14 +34,11 @@ float applyExpo(float x, float expo) {
   return (1.0f - expo) * x + expo * x * x * x;
 }
 
-int applyExpoToPWM(byte input, bool reverse, float expo, float forwardLimit, float brakeLimit) {
+int applyExpoToPWM(byte input, bool reverse, float expo, float forwardLimit, float brakeLimit, int centerUs) {
   float x = ((float)input - 127.5f) / 127.5f;
-
   x = applyExpo(x, expo);
 
-  if (reverse) {
-    x = -x;
-  }
+  if (reverse) x = -x;
 
   if (x > 0) {
     x *= forwardLimit;
@@ -49,13 +46,19 @@ int applyExpoToPWM(byte input, bool reverse, float expo, float forwardLimit, flo
     x *= brakeLimit;
   }
 
-  int pwm = (int)(1500.0f + x * 500.0f);
+  int range = min(centerUs - 1000, 2000 - centerUs);
+  int pwm = (int)((float)centerUs + x * (float)range);
 
   return constrain(pwm, 1000, 2000);
 }
 
 uint16_t readBatteryMillivolts() {
-  int raw = analogRead(BAT_PIN);
+  long sum = 0;
+  for (int i = 0; i < 16; i++) {
+    sum += analogRead(BAT_PIN);
+    delay(2);
+  }
+  int raw = sum / 16;
   float vOut = (raw / 1023.0f) * 5.0f;
   float vBat = vOut * (4.64f + 1.17f) / 1.17f * BAT_CALIBRATION;
   return (uint16_t)(vBat * 1000.0f);
@@ -140,7 +143,8 @@ void readCommands() {
         true,
         STEERING_EXPO,
         1.0f,
-        1.0f
+        1.0f,
+        STEER_CENTER_US
       );
 
       if (escArmed) {
@@ -149,7 +153,8 @@ void readCommands() {
           false,
           THROTTLE_EXPO,
           ESC_FORWARD_LIMIT,
-          ESC_BRAKE_LIMIT
+          ESC_BRAKE_LIMIT,
+          ESC_NEUTRAL_US
         );
       } else {
         escTargetUs = ESC_NEUTRAL_US;
