@@ -5,7 +5,7 @@ A hobby RC car project that turns an Android phone into an onboard FPV (first-pe
 As long as the phone has mobile data and the relay server is reachable from the internet, the car has effectively unlimited range — it can drive as far as cellular coverage reaches.
 
 ```
-[Browser + Gamepad] ◄──WS (LAN)──► [Node.js Relay Server] ──WSS──► [Android App]
+[Browser + Gamepad] ◄──WS (LAN)──► [Node.js Relay Server] ◄──WSS──► [Android App]
                                                                            │
                                                                      USB Serial
                                                                            │
