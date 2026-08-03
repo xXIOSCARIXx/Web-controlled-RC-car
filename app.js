@@ -7,7 +7,6 @@ const { execSync } = require('child_process');
 
 const PUBLISHER_PORT = 47291;
 const VIEWER_PORT    = 3000;
-const VIEWER_IP      = '192.168.1.205';
 const HOST           = '0.0.0.0';
 
 const SSL_DIR  = path.join(__dirname, 'ssl');
@@ -34,11 +33,13 @@ const html = fs.readFileSync(path.join(__dirname, 'UI.html'));
 
 const viewers = new Set();
 let publisher = null;
+
 let lastBatteryMsg    = null;
 let lastWifiMsg       = null;
 let lastCellMsg       = null;
 let lastCarBatteryMsg = null;
 let lastUsbStatusMsg  = null;
+let lastGpsMsg        = null;
 
 function notifyPublisherViewerCount() {
     if (publisher && publisher.readyState === WebSocket.OPEN) {
@@ -60,6 +61,10 @@ pubWss.on('connection', (ws, req) => {
     publisher = ws;
     console.log('Publisher connected from', req.socket.remoteAddress);
     notifyPublisherViewerCount();
+    const connMsg = JSON.stringify({ type: 'publisher_status', connected: true });
+    for (const viewer of viewers) {
+        if (viewer.readyState === WebSocket.OPEN) viewer.send(connMsg);
+    }
 
     ws.on('message', (data, isBinary) => {
         if (!isBinary) {
@@ -100,11 +105,24 @@ pubWss.on('connection', (ws, req) => {
                     }
                     return;
                 }
+                if (msg.type === 'gps') {
+                    lastGpsMsg = data.toString();
+                    for (const viewer of viewers) {
+                        if (viewer.readyState === WebSocket.OPEN) viewer.send(lastGpsMsg);
+                    }
+                    return;
+                }
             } catch {}
+
+            for (const viewer of viewers) {
+                if (viewer.readyState === WebSocket.OPEN) viewer.send(data, { binary: false });
+            }
+            return;
         }
+
         for (const viewer of viewers) {
             if (viewer.readyState === WebSocket.OPEN && viewer.bufferedAmount === 0) {
-                viewer.send(data, { binary: isBinary });
+                viewer.send(data, { binary: true });
             }
         }
     });
@@ -113,6 +131,10 @@ pubWss.on('connection', (ws, req) => {
         if (publisher === ws) {
             publisher = null;
             console.log('Publisher disconnected');
+            const msg = JSON.stringify({ type: 'publisher_disconnected' });
+            for (const viewer of viewers) {
+                if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);
+            }
         }
     });
 });
@@ -122,12 +144,6 @@ pubServer.listen(PUBLISHER_PORT, HOST, () => {
 });
 
 const viewServer = http.createServer((req, res) => {
-    const clientIp = req.socket.remoteAddress?.replace('::ffff:', '');
-    if (clientIp !== VIEWER_IP) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return;
-    }
     if (req.method === 'GET' && req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(html);
@@ -141,18 +157,21 @@ const viewWss = new WebSocket.Server({ server: viewServer, perMessageDeflate: fa
 
 viewWss.on('connection', (ws, req) => {
     const clientIp = req.socket.remoteAddress?.replace('::ffff:', '');
-    if (clientIp !== VIEWER_IP) {
-        ws.close(1008, 'Forbidden');
-        return;
-    }
 
     viewers.add(ws);
     console.log('Viewer connected from', clientIp);
-    if (lastBatteryMsg)    setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(lastBatteryMsg);    }, 100);
-    if (lastWifiMsg)       setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(lastWifiMsg);       }, 100);
-    if (lastCellMsg)       setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(lastCellMsg);       }, 100);
-    if (lastCarBatteryMsg) setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(lastCarBatteryMsg); }, 100);
-    if (lastUsbStatusMsg)  setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(lastUsbStatusMsg);  }, 100);
+
+    const publisherIsConnected = !!(publisher && publisher.readyState === WebSocket.OPEN);
+    ws.send(JSON.stringify({ type: 'publisher_status', connected: publisherIsConnected }));
+
+    if (publisherIsConnected) {
+        for (const cached of [lastBatteryMsg, lastWifiMsg, lastCellMsg, lastCarBatteryMsg, lastUsbStatusMsg, lastGpsMsg]) {
+            if (cached && ws.readyState === WebSocket.OPEN) {
+                ws.send(cached);
+            }
+        }
+    }
+
     notifyPublisherViewerCount();
     if (publisher && publisher.readyState === WebSocket.OPEN) {
         publisher.send(JSON.stringify({ type: 'viewer_connected' }));

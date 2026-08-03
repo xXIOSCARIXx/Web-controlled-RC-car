@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>ShadowScoutX Live</title>
@@ -21,8 +21,8 @@
             position: fixed;
             right: 12px;
             bottom: 12px;
-            width: 720px;
-            height: 600px;
+            width: clamp(200px, 30vw, 720px);
+            aspect-ratio: 6 / 5;
             border-radius: 10px;
             overflow: hidden;
             background: #111;
@@ -169,7 +169,7 @@
             font: bold 8px/1 monospace;
             color: #888;
             text-align: center;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.06em;
         }
         #battery-widget {
             display: flex;
@@ -203,7 +203,7 @@
             left: 0;
             top: 0;
             bottom: 0;
-            width: 0%;
+            width: 0;
             border-radius: 2px;
             background: #6f6;
             transition: width 0.4s ease, background 0.4s ease;
@@ -220,14 +220,99 @@
             z-index: 1;
         }
         #car-battery-voltage {
-            font: bold 13px/1 monospace;
+            font: bold 22px/1 monospace;
             color: #6f6;
         }
         #car-battery-voltage.warn { color: #fa4; }
         #car-battery-voltage.crit { color: #f44; }
         #car-battery-usb {
-            font: 9px/1 monospace;
+            font: 12px/1.6 monospace;
             color: #888;
+        }
+        #audio-btn {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            background: rgba(0,0,0,0.55);
+            color: #888;
+            font: 11px/1.6 monospace;
+            cursor: pointer;
+            pointer-events: all;
+        }
+        #audio-btn.on { color: #6cf; border-color: #6cf; }
+        @keyframes pulse-warning {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        #cell-warning {
+            display: none;
+            position: fixed;
+            top: 52px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 6px 16px;
+            background: rgba(255, 0, 0, 0.35);
+            border: 1px solid #ff2222;
+            border-radius: 6px;
+            color: #ff5555;
+            font: bold 11px/1.6 monospace;
+            letter-spacing: 0.06em;
+            pointer-events: none;
+            z-index: 9998;
+            white-space: nowrap;
+            backdrop-filter: blur(4px);
+        }
+        #cell-warning.visible { display: block; animation: pulse-warning 1.2s ease-in-out infinite; }
+
+        @keyframes conn-pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,60,60,0.5); }
+            50%       { opacity: 0.6; box-shadow: 0 0 0 18px rgba(255,60,60,0); }
+        }
+        #conn-lost {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        #conn-lost.visible {
+            display: flex;
+        }
+        #conn-lost-box {
+            padding: 18px 36px;
+            border-radius: 10px;
+            background: rgba(20,0,0,0.78);
+            border: 2px solid #f44;
+            color: #f88;
+            font: bold 18px/1.5 monospace;
+            letter-spacing: 0.08em;
+            text-align: center;
+            backdrop-filter: blur(6px);
+            animation: conn-pulse 1.4s ease-in-out infinite;
+        }
+        #conn-lost-box small {
+            display: block;
+            margin-top: 4px;
+            font: 11px/1.4 monospace;
+            color: #a55;
+            letter-spacing: 0.04em;
+        }
+        #conn-lost.never #conn-lost-box {
+            background: rgba(20,10,0,0.78);
+            border-color: #f80;
+            color: #fb8;
+            animation-name: conn-pulse-orange;
+        }
+        #conn-lost.never #conn-lost-box small { color: #a63; }
+        @keyframes conn-pulse-orange {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,136,0,0.5); }
+            50%       { opacity: 0.6; box-shadow: 0 0 0 18px rgba(255,136,0,0); }
         }
     </style>
 </head>
@@ -235,7 +320,7 @@
 <canvas id="stream"></canvas>
 <div id="map-widget">
     <div id="map-el"></div>
-    <div id="map-coords">waiting for GPS...</div>
+    <div id="map-coords">Waiting for GPS...</div>
 </div>
 <div id="map-fullscreen">
     <div id="map-fs-el"></div>
@@ -286,9 +371,17 @@
     </div>
 </div>
 <div id="car-battery-widget" style="position:fixed;top:12px;left:12px;padding:6px 10px;border-radius:8px;background:rgba(0,0,0,0.55);pointer-events:none;">
-    <div id="car-battery-usb">No device</div>
+    <div id="car-battery-usb">USB: Waiting...</div>
     <div id="car-battery-voltage">--.-V</div>
 </div>
+<div id="cell-warning">⚠ WEAK CELLULAR SIGNAL ⚠</div>
+<div id="conn-lost">
+    <div id="conn-lost-box">
+        <span id="conn-lost-title">⚠ NO CONNECTION ⚠</span>
+        <small id="conn-lost-sub">Publisher disconnected</small>
+    </div>
+</div>
+<button id="audio-btn">🔇 Audio off</button>
 <script>
     const canvas = document.getElementById('stream');
     const ctx = canvas.getContext('2d');
@@ -297,9 +390,17 @@
     window.addEventListener('resize', () => {
         canvas.width  = window.innerWidth;
         canvas.height = window.innerHeight;
+        if (offscreen.src) {
+            const iw = offscreen.naturalWidth;
+            const ih = offscreen.naturalHeight;
+            if (!iw || !ih) return;
+            const scale = Math.min(canvas.width / iw, canvas.height / ih);
+            const dw = iw * scale, dh = ih * scale;
+            ctx.drawImage(offscreen, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+        }
     });
     canvas.addEventListener('click', () => {
-        document.fullscreenElement ? document.exitFullscreen() : canvas.requestFullscreen();
+        document.fullscreenElement ? document.exitFullscreen() : document.body.requestFullscreen();
     });
 
     const offscreen = new Image();
@@ -360,16 +461,88 @@
         document.getElementById('wifi-a3').setAttribute('stroke',  level >= 4 ? active : '#333');
     }
 
+    const cellWarning = document.getElementById('cell-warning');
+
     function updateCell(level) {
-        const active = level < 2 ? '#f44' : '#6cf';
+        const active = level >= 3 ? '#6cf' : level === 2 ? '#fa0' : '#f44';
         for (let i = 1; i <= 4; i++) {
             document.getElementById(`cell-b${i}`).style.background =
                 i <= level ? active : '#333';
         }
+        cellWarning.classList.toggle('visible', level <= 2);
+    }
+
+    const SAMPLE_RATE = 16000;
+    let audioCtx = null;
+    let audioEnabled = false;
+    let nextPlayTime = 0;
+    const audioBtn = document.getElementById('audio-btn');
+
+    audioBtn.addEventListener('click', () => {
+        audioEnabled = !audioEnabled;
+        if (audioEnabled) {
+            audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+            nextPlayTime = audioCtx.currentTime;
+            audioBtn.textContent = '🔊 Audio on';
+            audioBtn.className = 'on';
+        } else {
+            audioCtx.close();
+            audioCtx = null;
+            audioBtn.textContent = '🔇 Audio off';
+            audioBtn.className = '';
+        }
+    });
+
+    function handleAudioChunk(arrayBuffer) {
+        if (!audioEnabled || !audioCtx) return;
+        const pcm = arrayBuffer.slice(1);
+        const int16 = new Int16Array(pcm);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+        const buf = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+        buf.copyToChannel(float32, 0);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        const now = audioCtx.currentTime;
+        if (nextPlayTime < now) nextPlayTime = now + 0.05;
+        src.start(nextPlayTime);
+        nextPlayTime += buf.duration;
     }
 
     const ws = new WebSocket(`ws://${location.host}?role=viewer`);
     ws.binaryType = 'arraybuffer';
+
+    const connLost      = document.getElementById('conn-lost');
+    const connLostTitle = document.getElementById('conn-lost-title');
+    const connLostSub   = document.getElementById('conn-lost-sub');
+    let publisherEverConnected = false;
+    let connLostTimer = null;
+
+    function showConnLost() {
+        if (connLostTimer) return;
+        connLostTimer = setTimeout(() => {
+            connLostTimer = null;
+            if (!publisherEverConnected) {
+                connLost.classList.add('never');
+                connLostTitle.textContent = '⚠ NO CONNECTION ⚠';
+                connLostSub.textContent = 'Waiting for publisher...';
+            } else {
+                connLost.classList.remove('never');
+                connLostTitle.textContent = '⚠ CONNECTION LOST ⚠';
+                connLostSub.textContent = 'Publisher disconnected';
+            }
+            connLost.classList.add('visible');
+        }, 400);
+    }
+    function hideConnLost() {
+        if (connLostTimer) { clearTimeout(connLostTimer); connLostTimer = null; }
+        publisherEverConnected = true;
+        connLost.classList.remove('visible', 'never');
+    }
+
+    ws.onclose = () => showConnLost();
+    ws.onerror = () => showConnLost();
 
     const mapWidget   = document.getElementById('map-widget');
     const mapCoords   = document.getElementById('map-coords');
@@ -448,9 +621,29 @@
     });
 
     ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+            hideConnLost();
+            const frameType = new Uint8Array(event.data)[0];
+            if (frameType === 0x01) {
+                handleAudioChunk(event.data);
+            } else {
+                pendingBlob = new Blob([event.data.slice(1)], { type: 'image/jpeg' });
+                if (!drawing) { drawing = true; drawNext(); }
+            }
+            return;
+        }
         if (typeof event.data === 'string') {
             let msg;
             try { msg = JSON.parse(event.data); } catch { return; }
+            if (msg.type === 'publisher_disconnected') {
+                showConnLost();
+                return;
+            }
+            if (msg.type === 'publisher_status') {
+                if (msg.connected) hideConnLost();
+                else showConnLost();
+                return;
+            }
             if (msg.type === 'car_battery') {
                 updateCarBattery(msg.mv);
                 return;
@@ -490,13 +683,10 @@
                     fsCircle.setLatLng(ll).setRadius(acc);
                 }
             }
-            return;
         }
-        pendingBlob = new Blob([event.data], { type: 'image/jpeg' });
-        if (!drawing) { drawing = true; drawNext(); }
     };
 
-    const DEADZONE     = 0.08;
+    const DEADZONE     = 0.15;
     const KEEPALIVE_MS = 100;
     const TRIM_STEP    = 0.01;
     const TRIM_MAX     = 1.0;
