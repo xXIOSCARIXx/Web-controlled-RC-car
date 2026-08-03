@@ -2,6 +2,8 @@
 
 A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
 
+As long as the phone has mobile data and the relay server is reachable from the internet, the car has effectively unlimited range — it can drive as far as cellular coverage reaches.
+
 ```
 [Browser + Gamepad] ──WS (LAN)──► [Node.js Relay Server] ──WSS──► [Android App]
                                                                           │
@@ -248,8 +250,8 @@ Open `http://<server-ip>:3000` in a browser. Connect your gamepad before opening
 
 ## Networking Notes
 
-- The publisher WebSocket (port 47291) uses a self-signed TLS certificate, pinned in the Android app, so only your phone can connect as the driver.
-- The viewer port (3000) is plain HTTP/WS and is intended for local network use — open `http://<server-ip>:3000` from any browser on the same LAN.
+- The publisher WebSocket (port 47291) uses a self-signed TLS certificate, pinned in the Android app, so only your phone can connect as the driver. This port needs to be reachable from the internet (port-forward it on your router) — the phone connects out over mobile data, giving the car effectively unlimited range as long as there's cell coverage.
+- The viewer port (3000) stays on the LAN; the browser connects locally to the relay server while the car itself can be anywhere.
 - There's no login on the viewer by default — anyone on your LAN who knows the port can watch and grab the controls. For a private session, a simple nginx `auth_basic` block is enough.
 
 ---
