@@ -2,6 +2,7 @@
 package com.shadowscoutx
 
 import android.annotation.SuppressLint
+import android.util.Range
 import android.util.Log
 import android.app.Notification
 import android.app.NotificationChannel
@@ -508,12 +509,20 @@ class MainService : LifecycleService() {
                     activeCamera = cameraProvider?.bindToLifecycle(this, selector, preview)
                     activeCamera?.let {
                         val focusDistance = 0.0f
-                        Camera2CameraControl.from(it.cameraControl).captureRequestOptions = CaptureRequestOptions.Builder()
+                        val builder = CaptureRequestOptions.Builder()
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
                             .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-                            .build()
+                            
+                            // Low-light optimizations
+                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                            // Allow FPS to drop as low as 10 in dark environments to allow longer exposure time
+                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(10, 30))
+                            // Boost exposure compensation slightly (+2.0 is usually the max or near max)
+                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 2)
+                        
+                        Camera2CameraControl.from(it.cameraControl).captureRequestOptions = builder.build()
                     }
                 } catch (e: Exception) { e.printStackTrace() }
             },
