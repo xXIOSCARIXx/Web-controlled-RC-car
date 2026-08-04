@@ -2,7 +2,7 @@
 
 A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live H.264 video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
 
-As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited range. On Wi-Fi the phone connects to the relay server on the local network directly; on mobile data the relay server needs to be reachable from the internet (port-forward port 47291 on your router). Note that the video stream is bandwidth-hungry, so an unlimited mobile data plan is strongly recommended.
+As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited range. On Wi-Fi the phone connects to the relay server on the local network directly; on mobile data the relay server needs to be reachable from the internet (port-forward port 47291 on your router).
 
 ```
 [Browser + Gamepad] ◄──WSS (LAN)──► [Node.js Relay Server] ◄──WSS──► [Android App]
