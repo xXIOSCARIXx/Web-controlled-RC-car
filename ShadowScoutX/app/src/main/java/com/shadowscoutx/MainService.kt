@@ -419,7 +419,7 @@ class MainService : LifecycleService() {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (isShuttingDown || (this@MainService.webSocket !== webSocket)) return
+                    if (isShuttingDown || this@MainService.webSocket !== webSocket) return
                     Handler(Looper.getMainLooper()).post {
                         stopStreamingInternal()
                         val now = SystemClock.uptimeMillis()
@@ -514,12 +514,8 @@ class MainService : LifecycleService() {
                             .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
                             .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-                            
-                            // Low-light optimizations
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                            // Allow FPS to drop as low as 10 in dark environments to allow longer exposure time
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(10, 30))
-                            // Boost exposure compensation slightly (+2.0 is usually the max or near max)
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 2)
                         
                         Camera2CameraControl.from(it.cameraControl).captureRequestOptions = builder.build()
