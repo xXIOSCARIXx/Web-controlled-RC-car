@@ -390,56 +390,95 @@
     window.addEventListener('resize', () => {
         canvas.width  = window.innerWidth;
         canvas.height = window.innerHeight;
-        if (offscreen.src) {
-            const iw = offscreen.naturalWidth;
-            const ih = offscreen.naturalHeight;
-            if (!iw || !ih) return;
-            const scale = Math.min(canvas.width / iw, canvas.height / ih);
-            const dw = iw * scale, dh = ih * scale;
-            ctx.drawImage(offscreen, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
-        }
+        if (lastFrame) paintFrame(lastFrame);
     });
     canvas.addEventListener('click', () => {
         document.fullscreenElement ? document.exitFullscreen() : document.body.requestFullscreen();
     });
 
-    const offscreen = new Image();
-    let pendingBlob = null;
-    let drawing = false;
-    let drawWatchdog = null;
+    let videoDecoder = null;
+    let decoderSeenKeyframe = false;
+    let lastFrame = null;
 
-    function drawNext() {
-        if (!pendingBlob) { drawing = false; return; }
-        const blob = pendingBlob;
-        pendingBlob = null;
-        const url = URL.createObjectURL(blob);
+    function nalType(data, i, scLen) {
+        return data[i + scLen] & 0x1f;
+    }
 
-        clearTimeout(drawWatchdog);
-        drawWatchdog = setTimeout(() => {
-            URL.revokeObjectURL(url);
-            drawing = false;
-            if (pendingBlob) { drawing = true; drawNext(); }
-        }, 2000);
+    function findNalTypes(data) {
+        const types = new Set();
+        for (let i = 0; i < data.length - 3; i++) {
+            let scLen = 0;
+            if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0 && i+3 < data.length && data[i+3] === 1) scLen = 4;
+            else if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 1) scLen = 3;
+            if (scLen > 0) types.add(nalType(data, i, scLen));
+        }
+        return types;
+    }
 
-        offscreen.onerror = () => {
-            clearTimeout(drawWatchdog);
-            URL.revokeObjectURL(url);
-            drawNext();
-        };
-        offscreen.onload = () => {
-            clearTimeout(drawWatchdog);
-            const iw = offscreen.naturalWidth;
-            const ih = offscreen.naturalHeight;
-            const scale = Math.min(canvas.width / iw, canvas.height / ih);
-            const dw = iw * scale;
-            const dh = ih * scale;
-            const dx = (canvas.width - dw) / 2;
-            const dy = (canvas.height - dh) / 2;
-            ctx.drawImage(offscreen, dx, dy, dw, dh);
-            URL.revokeObjectURL(url);
-            drawNext();
-        };
-        offscreen.src = url;
+    function paintFrame(frame) {
+        const scale = Math.min(canvas.width / frame.displayWidth, canvas.height / frame.displayHeight);
+        const dw = frame.displayWidth * scale;
+        const dh = frame.displayHeight * scale;
+        ctx.drawImage(frame, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+    }
+
+    function drawFrame(frame) {
+        if (lastFrame) lastFrame.close();
+        lastFrame = frame;
+        paintFrame(frame);
+    }
+
+    function createDecoder() {
+        if (videoDecoder && videoDecoder.state !== 'closed') {
+            try { videoDecoder.close(); } catch (_) {}
+        }
+        decoderSeenKeyframe = false;
+        videoDecoder = new VideoDecoder({
+            output: drawFrame,
+            error: () => {
+                try { videoDecoder.close(); } catch (_) {}
+                videoDecoder = null;
+                decoderSeenKeyframe = false;
+            },
+        });
+        videoDecoder.configure({
+            codec: 'avc1.42E028',
+            hardwareAcceleration: 'prefer-hardware',
+            optimizeForLatency: true,
+        });
+    }
+
+    function handleVideoChunk(arrayBuffer) {
+        const data = new Uint8Array(arrayBuffer, 1);
+        const types = findNalTypes(data);
+
+
+        const hasSlice = types.has(1) || types.has(5);
+        const hasIDR   = types.has(5);
+        if (!hasSlice) return;
+
+        if (!videoDecoder || videoDecoder.state === 'closed') {
+            if (!hasIDR) return;
+            createDecoder();
+        }
+
+        if (!decoderSeenKeyframe) {
+            if (!hasIDR) return;
+            decoderSeenKeyframe = true;
+        }
+
+        if (videoDecoder.decodeQueueSize > 1 && !hasIDR) return;
+
+        try {
+            videoDecoder.decode(new EncodedVideoChunk({
+                type: hasIDR ? 'key' : 'delta',
+                timestamp: performance.now() * 1000,
+                data: data,
+            }));
+        } catch (_) {
+            videoDecoder = null;
+            decoderSeenKeyframe = false;
+        }
     }
 
     const batteryFill       = document.getElementById('battery-fill');
@@ -510,7 +549,7 @@
         nextPlayTime += buf.duration;
     }
 
-    const ws = new WebSocket(`ws://${location.host}?role=viewer`);
+    const ws = new WebSocket(`wss://${location.host}?role=viewer`);
     ws.binaryType = 'arraybuffer';
 
     const connLost      = document.getElementById('conn-lost');
@@ -626,9 +665,8 @@
             const frameType = new Uint8Array(event.data)[0];
             if (frameType === 0x01) {
                 handleAudioChunk(event.data);
-            } else {
-                pendingBlob = new Blob([event.data.slice(1)], { type: 'image/jpeg' });
-                if (!drawing) { drawing = true; drawNext(); }
+            } else if (frameType === 0x02) {
+                handleVideoChunk(event.data);
             }
             return;
         }

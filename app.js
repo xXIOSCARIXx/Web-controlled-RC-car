@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const https = require('https');
 const WebSocket = require('ws');
 const { execSync } = require('child_process');
@@ -15,7 +14,6 @@ const CRT_PATH = path.join(SSL_DIR, 'cert.pem');
 const CER_PATH = path.join(SSL_DIR, 'cert.cer');
 
 if (!fs.existsSync(KEY_PATH) || !fs.existsSync(CRT_PATH)) {
-    console.log('Generating self-signed certificate...');
     fs.mkdirSync(SSL_DIR, { recursive: true });
     execSync(
         `openssl req -x509 -newkey rsa:4096 -keyout "${KEY_PATH}" -out "${CRT_PATH}" ` +
@@ -23,7 +21,6 @@ if (!fs.existsSync(KEY_PATH) || !fs.existsSync(CRT_PATH)) {
         { stdio: 'inherit' }
     );
     execSync(`openssl x509 -in "${CRT_PATH}" -out "${CER_PATH}" -outform DER`);
-    console.log(`Certificate generated. Copy ssl/cert.cer to your Android project at app/src/main/res/raw/cert.cer`);
 }
 
 const sslKey  = fs.readFileSync(KEY_PATH);
@@ -47,19 +44,18 @@ function notifyPublisherViewerCount() {
     }
 }
 
-const pubServer = https.createServer({ key: sslKey, cert: sslCert }, (req, res) => {
+const pubServer = https.createServer({ key: sslKey, cert: sslCert }, (_req, res) => {
     res.writeHead(404);
     res.end();
 });
 
 const pubWss = new WebSocket.Server({ server: pubServer, perMessageDeflate: false });
 
-pubWss.on('connection', (ws, req) => {
+pubWss.on('connection', (ws, _req) => {
     if (publisher && publisher.readyState === WebSocket.OPEN) {
         publisher.close(1000, 'replaced');
     }
     publisher = ws;
-    console.log('Publisher connected from', req.socket.remoteAddress);
     notifyPublisherViewerCount();
     const connMsg = JSON.stringify({ type: 'publisher_status', connected: true });
     for (const viewer of viewers) {
@@ -120,17 +116,34 @@ pubWss.on('connection', (ws, req) => {
             return;
         }
 
-        for (const viewer of viewers) {
-            if (viewer.readyState === WebSocket.OPEN && viewer.bufferedAmount === 0) {
-                viewer.send(data, { binary: true });
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        const isH264 = buf[0] === 0x02;
+
+        let isKeyframe = false;
+        if (isH264) {
+            for (let i = 0; i < buf.length - 4; i++) {
+                let scLen = 0;
+                if (buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 0 && buf[i+3] === 1) scLen = 4;
+                else if (buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 1) scLen = 3;
+                if (scLen > 0) {
+                    const nalType = buf[i + scLen] & 0x1f;
+                    if (nalType === 5) { isKeyframe = true; break; }
+                    if (nalType === 1) break;
+                }
             }
+        }
+
+        const BACKLOG = 256 * 1024;
+        for (const viewer of viewers) {
+            if (viewer.readyState !== WebSocket.OPEN) continue;
+            if (isH264 && !isKeyframe && viewer.bufferedAmount > BACKLOG) continue;
+            viewer.send(data, { binary: true });
         }
     });
 
     ws.on('close', () => {
         if (publisher === ws) {
             publisher = null;
-            console.log('Publisher disconnected');
             const msg = JSON.stringify({ type: 'publisher_disconnected' });
             for (const viewer of viewers) {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);
@@ -143,7 +156,7 @@ pubServer.listen(PUBLISHER_PORT, HOST, () => {
     console.log(`Publisher WSS listening on wss://${HOST}:${PUBLISHER_PORT}`);
 });
 
-const viewServer = http.createServer((req, res) => {
+const viewServer = https.createServer({ key: sslKey, cert: sslCert }, (req, res) => {
     if (req.method === 'GET' && req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(html);
@@ -203,5 +216,5 @@ viewWss.on('connection', (ws, req) => {
 });
 
 viewServer.listen(VIEWER_PORT, HOST, () => {
-    console.log(`Viewer WS listening on http://${HOST}:${VIEWER_PORT}`);
+    console.log(`Viewer WSS listening on https://${HOST}:${VIEWER_PORT}`);
 });
