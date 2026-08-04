@@ -1,11 +1,11 @@
 # ShadowScoutX
 
-A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
+A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live H.264 video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
 
 As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited range. On Wi-Fi the phone connects to the relay server on the local network directly; on mobile data the relay server needs to be reachable from the internet (port-forward port 47291 on your router). Note that the video stream is bandwidth-hungry, so an unlimited mobile data plan is strongly recommended.
 
 ```
-[Browser + Gamepad] ◄──WS (LAN)──► [Node.js Relay Server] ◄──WSS──► [Android App]
+[Browser + Gamepad] ◄──WSS (LAN)──► [Node.js Relay Server] ◄──WSS──► [Android App]
                                                                            │
                                                                      USB Serial
                                                                            │
@@ -17,12 +17,17 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ## Features
 
 ### Live Video Streaming
-- Camera frames are captured via CameraX, converted from YUV to NV21, JPEG-compressed at quality 75, and streamed as binary WebSocket frames to all connected viewers.
+- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (1440×1080, 6 Mbps VBR, 30 fps, Baseline profile Level 4).
+- The encoder is configured with `KEY_I_FRAME_INTERVAL = 0` so every frame is eligible to be a keyframe; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR.
+- Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
+- The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
+- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`) with both optical and video stabilization disabled to minimise encoder complexity and latency.
 - Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI.
 
 
 ### Live Audio Streaming
-- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono) and streamed as binary frames interleaved with video, distinguished by a frame-type header byte (`0x01` = audio, anything else = video).
+- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono, `VOICE_COMMUNICATION` source) and streamed as binary frames interleaved with video.
+- Binary frames are distinguished by a type byte: `0x01` = audio (raw PCM), `0x02` = H.264 video.
 - The viewer page includes an unmute button since browsers require a user gesture before playing audio.
 
 ### Torch / Flashlight Control
@@ -31,27 +36,28 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Torch state is managed through CameraX `Camera2CameraControl` capture request options.
 
 ### GPS Tracking
-- Uses Google's Fused Location Provider for high-accuracy GPS with a 1-second update interval.
+- Uses Google's Fused Location Provider for high-accuracy GPS with a preferred 2-second update interval and a minimum 1-second interval.
 - Coordinates and accuracy are streamed as JSON to the relay server and forwarded to all viewers in real time.
 - The viewer displays a live satellite map (Leaflet.js + Esri World Imagery tiles) in the bottom-right corner with a position marker and an accuracy radius circle.
-- Clicking the mini-map expands it to a full-screen interactive map.
+- Clicking the mini-map expands it to a full-screen interactive map (press Escape or the close button to return).
 - Coordinates are displayed in decimal degrees with ±accuracy in metres.
 
 ### Android Phone Telemetry (HUD)
 - **Phone battery**: Level streamed as JSON and shown as a colour-coded battery icon (green → amber → red as it depletes).
-- **Wi-Fi signal**: RSSI polled every 5 seconds and shown as a 4-bar signal widget.
-- **Cellular signal**: Reported via `PhoneStateListener` and shown as a second 4-bar signal widget. Covers Android 9 through 14+.
+- **Wi-Fi signal**: RSSI polled every 5 seconds and shown as a 4-bar arc signal widget.
+- **Cellular signal**: Reported via `PhoneStateListener` and shown as a 4-bar signal widget. Covers Android 9 through 14+. A pulsing red warning banner appears when signal is weak (level ≤ 2).
 
 ### Car Battery Monitoring
 - The Arduino samples its battery voltage via a resistor-divider on analog pin A0, averages 16 ADC readings, and sends a 3-byte binary packet (`'B'` + 2 voltage bytes) over USB serial every 500 ms.
 - The Android app reads these packets from the USB serial port, decodes the millivolt value, and forwards it to the server as `{"type":"car_battery","mv":...}`.
-- The viewer renders the voltage as a large readout that turns **amber below 6.8 V** and **red below 6.2 V**.
+- The viewer renders the voltage as a large readout that turns **amber below 10.5 V** and **red below 9.6 V**.
 
 ### USB Serial / Arduino Control
 - The Android app connects to an Arduino (or any CDC-ACM USB serial device) using the [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android) library at 115200 baud.
 - USB connection and reconnection are fully automatic — the app polls for a device every 2 seconds and requests Android USB permission at first connection.
 - Gamepad drive commands received from the server are relayed over USB as a 4-byte packet: `'D'` | steer byte | throttle byte | checksum, where checksum = `steer XOR throttle XOR 0xFF`. The firmware validates this checksum and discards corrupt packets.
 - A `'C'` (centre) command is sent on clean shutdown to return servos to neutral.
+- The Android side suppresses redundant drive packets — a packet is only sent if the steer or throttle value changed, or more than 200 ms have passed since the last send (`DRIVE_KEEPALIVE_MS = 200`).
 - USB status is shown on the Android UI and forwarded to the viewer HUD.
 
 ### RC Vehicle Firmware (Arduino)
@@ -67,21 +73,20 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Uses the Web Gamepad API, polled at 50 Hz (every 20 ms).
 - **Left stick axis 0** → steering. **R2** → forward throttle. **L2** → brake/reverse. Throttle = `R2 − L2`, clamped to ±1.
 - **Deadzone**: 15% on the steering axis to ignore stick drift.
-- **Steering trim**: D-Pad left/right adjusts a persistent trim offset in ±0.01 steps (max ±1.0) that is added to the raw stick value before sending.
+- **Steering trim**: D-Pad left/right adjusts a persistent trim offset in ±0.01 steps (max ±1.0) that is added to the raw stick value before sending. The trim offset is shown as a red overlay on the steer bar.
 - **A button** → toggle torch. **B button** → toggle camera (front/rear).
 - A keepalive packet is sent at least every 100 ms even when inputs haven't changed, so the Arduino watchdog stays satisfied.
 - The HUD displays live bar graphs for steer and throttle values plus the trim offset, and shows the detected gamepad name.
 - Gamepad state is serialised to JSON and forwarded through the relay to the Android app, which extracts axes and trigger values and sends drive bytes over USB.
 
 ### Relay Server (Node.js)
-- Two separate HTTPS/WSS servers on different ports: one for the Android publisher (`47291`) and one for browser viewers (`3000`).
-- The publisher connection uses **mutual TLS** — a self-signed certificate is auto-generated with OpenSSL on first run and must be installed as a raw resource in the Android app (`res/raw/cert.cer`). The Android app pins this certificate using a custom `TrustManager`.
-- The viewer server uses plain HTTP/WS and is intended for local network use only.
+- Two separate HTTPS/WSS servers on different ports: one for the Android publisher (`47291`) and one for browser viewers (`3000`). Both use the same self-signed TLS certificate.
+- The publisher connection uses a self-signed certificate auto-generated with OpenSSL on first run; the `.cer` file must be installed as a raw resource in the Android app (`res/raw/cert.cer`). The Android app pins this certificate using a custom `TrustManager`.
 - The server caches the last message of each telemetry type (`battery`, `wifi`, `cell`, `car_battery`, `usb_status`, `gps`) and replays them immediately to any viewer that connects mid-session, so the HUD is fully populated on join.
 - Only one publisher is permitted at a time; a new connection closes the previous one.
-- Binary video/audio frames are forwarded only when the viewer's `bufferedAmount` is zero, providing natural backpressure to prevent buffer bloat.
-- Viewer-initiated messages (`toggle_camera`, `toggle_torch`, `gamepad`) are forwarded upstream to the publisher only, never broadcast.
-- The publisher is notified of viewer count and connect/disconnect events.
+- H.264 binary frames are forwarded only when the viewer's `bufferedAmount` is below 256 KB, and non-keyframe frames are dropped for lagging viewers, providing natural backpressure to prevent buffer bloat.
+- Viewer-initiated messages (`toggle_camera`, `toggle_torch`, `gamepad`) are forwarded upstream to the publisher only when the publisher's `bufferedAmount` is zero.
+- The publisher is notified of viewer count changes and individual viewer connect/disconnect events.
 
 ### Android App UI
 - Minimal always-on dark UI built with Jetpack Compose.
@@ -90,7 +95,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Screen is kept on via `FLAG_KEEP_SCREEN_ON`.
 - A **QUIT** button cleanly stops the foreground service, closes the WebSocket, centres servos, and exits.
 - Runs as a `LifecycleService` foreground service so it survives the activity being backgrounded, with a persistent notification.
-- UI updates are throttle-limited to ~30 fps to avoid unnecessary recompositions.
+- UI updates are throttle-limited to ~30 fps to avoid unnecessary recompositions; critical state changes (WSS connect/disconnect, streaming toggle) bypass the throttle and update immediately.
 
 ---
 
@@ -117,11 +122,11 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - OpenSSL available on `$PATH` (for certificate generation on first run)
 
 ### Browser Viewer
-- Any modern browser with WebSocket and Web Gamepad API support (Chrome/Edge recommended for gamepad support)
+- Any modern browser with WebSocket, WebCodecs (`VideoDecoder`), and Web Gamepad API support (Chrome/Edge recommended)
 - A gamepad or controller connected via USB or Bluetooth
 
 ### Android App
-- Android 9 (API 26) or newer
+- Android 9 / API 28 or newer
 - Built from source — **no pre-built APK is distributed** (see below)
 
 ### Arduino / RC Hardware
@@ -146,10 +151,10 @@ On first run, a self-signed TLS certificate is generated in `ssl/`. Copy `ssl/ce
 
 The server prints the ports it is listening on. By default:
 
-| Port  | Purpose                      |
-|-------|------------------------------|
-| 47291 | Android publisher (WSS/TLS)  |
-| 3000  | Browser viewer (WS/HTTP)     |
+| Port  | Purpose                        |
+|-------|--------------------------------|
+| 47291 | Android publisher (HTTPS/WSS)  |
+| 3000  | Browser viewer (HTTPS/WSS)     |
 
 ### 2. Arduino Firmware
 
@@ -199,7 +204,7 @@ The Android app is not available as a pre-built APK. You must build it yourself 
 
 ### 4. Viewer
 
-Open `http://<server-ip>:3000` in a browser. Connect your gamepad before opening the page, or connect it at any time — it is detected automatically. The HUD and map populate as soon as the Android app connects and starts sending telemetry.
+Open `https://<server-ip>:3000` in a browser (accept the self-signed certificate warning). Connect your gamepad before opening the page, or connect it at any time — it is detected automatically. The HUD and map populate as soon as the Android app connects and starts sending telemetry.
 
 ---
 
@@ -216,8 +221,8 @@ Open `http://<server-ip>:3000` in a browser. Connect your gamepad before opening
 
 ### USB Serial (Arduino → Android)
 
-| Byte 0 | Byte 1      | Byte 2     |
-|--------|-------------|------------|
+| Byte 0 | Byte 1      | Byte 2      |
+|--------|-------------|-------------|
 | `'B'`  | Voltage MSB | Voltage LSB |
 
 - Value is battery millivolts as a big-endian `uint16_t`.
@@ -238,20 +243,22 @@ Open `http://<server-ip>:3000` in a browser. Connect your gamepad before opening
 | `publisher_status`   | Server → Viewers       | `connected` (bool)                          |
 | `publisher_disconnected` | Server → Viewers  | *(no extra fields)*                         |
 | `viewer_count`       | Server → Android       | `count` (integer)                           |
+| `viewer_connected`   | Server → Android       | *(no extra fields)*                         |
 
 ### WebSocket Binary Frames (Android → Viewers)
 
 | Byte 0  | Remaining bytes  |
 |---------|------------------|
 | `0x01`  | Raw PCM audio chunk (16 kHz, 16-bit, mono) |
-| anything else | JPEG video frame |
+| `0x02`  | H.264 NAL unit(s); IDR frames are preceded by the SPS/PPS config |
 
 ---
 
 ## Networking Notes
 
-- The publisher WebSocket (port 47291) uses a self-signed TLS certificate, pinned in the Android app, so only your phone can connect as the driver. This port needs to be reachable from the internet (port-forward it on your router) — the phone connects out over mobile data, giving the car effectively unlimited range as long as there's cell coverage.
-- The viewer port (3000) stays on the LAN; the browser connects locally to the relay server while the car itself can be anywhere.
+- Both WebSocket servers (publisher port 47291 and viewer port 3000) use the same self-signed TLS certificate, so both use `wss://` / `https://`. Accept the browser certificate warning on first visit to the viewer.
+- The publisher WebSocket (port 47291) is pinned in the Android app, so only your phone can connect as the driver. This port needs to be reachable from the internet (port-forward it on your router) — the phone connects out over mobile data, giving the car effectively unlimited range as long as there's cell coverage.
+- The viewer port (3000) is intended for LAN use; the browser connects locally to the relay server while the car itself can be anywhere.
 - There's no login on the viewer by default — anyone on your LAN who knows the port can watch and grab the controls. For a private session, a simple nginx `auth_basic` block is enough.
 
 ---
