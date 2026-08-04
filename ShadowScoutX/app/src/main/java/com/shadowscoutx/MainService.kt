@@ -2,6 +2,7 @@
 package com.shadowscoutx
 
 import android.annotation.SuppressLint
+import android.util.Log
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,13 +12,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
+import android.view.Surface
 import android.hardware.usb.UsbDevice
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
+import android.media.*
 import android.hardware.usb.UsbManager
 import android.location.Location
 import android.net.wifi.WifiManager
@@ -32,8 +29,7 @@ import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import android.util.Size
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -55,7 +51,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.util.concurrent.Executors
@@ -63,7 +58,6 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
@@ -103,9 +97,15 @@ class MainService : LifecycleService() {
     }
     private var useFrontCamera = false
     private var torchEnabled = false
-    private var lastFrameSentAt = 0L
     @Volatile
     private var isShuttingDown = false
+
+    private var videoEncoder: MediaCodec? = null
+    private var inputSurface: Surface? = null
+    private var encoderWidth = 1440
+    private var encoderHeight = 1080
+    private var configBuffer: ByteArray? = null
+    private val videoEncoderLock = Any()
 
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
@@ -154,9 +154,6 @@ class MainService : LifecycleService() {
         }
     }
 
-    private var yuvBuffer: ByteArray? = null
-    private val jpegOutputStream = ByteArrayOutputStream()
-
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -186,7 +183,7 @@ class MainService : LifecycleService() {
             val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
             if ((level != -1) && (scale != -1)) {
-                val pct = (level * 100f / scale).roundToInt()
+                val pct = ((level * 100f) / scale).roundToInt()
                 webSocket?.send("""{"type":"battery","level":$pct}""")
             }
         }
@@ -232,7 +229,8 @@ class MainService : LifecycleService() {
                 createNotification(initialStatus),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
             )
         } else {
             startForeground(NOTIFICATION_ID, createNotification(initialStatus))
@@ -240,7 +238,7 @@ class MainService : LifecycleService() {
 
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Scout::WakeLock").apply {
-            acquire(10 * 60 * 1000L)
+            acquire(24 * 60 * 60 * 1000L)
         }
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
@@ -328,11 +326,11 @@ class MainService : LifecycleService() {
         reconnectHandler.removeCallbacksAndMessages(null)
         webSocket?.close(1000, null)
         webSocket = null
-        
+
         if (wsStatus == "WSS: Connected") {
             updateWsStatus("WSS: Connecting...")
         }
-        
+
         val url = if (serverIp.contains(':')) {
             "wss://$serverIp?role=publisher"
         } else {
@@ -352,7 +350,7 @@ class MainService : LifecycleService() {
                         val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
                         val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
                         if ((level != -1) && (scale != -1)) {
-                            val pct = (level * 100f / scale).roundToInt()
+                            val pct = ((level * 100f) / scale).roundToInt()
                             webSocket.send("""{"type":"battery","level":$pct}""")
                         }
                         updateSignalInfo()
@@ -411,7 +409,7 @@ class MainService : LifecycleService() {
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (isShuttingDown || this@MainService.webSocket !== webSocket) return
+                    if (isShuttingDown || (this@MainService.webSocket !== webSocket)) return
                     Handler(Looper.getMainLooper()).post {
                         stopStreamingInternal()
                         updateWsStatus("WSS: Connection lost, retrying...")
@@ -420,18 +418,21 @@ class MainService : LifecycleService() {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (isShuttingDown || this@MainService.webSocket !== webSocket) return
+                    if (isShuttingDown || (this@MainService.webSocket !== webSocket)) return
                     Handler(Looper.getMainLooper()).post {
                         stopStreamingInternal()
                         val now = SystemClock.uptimeMillis()
                         val elapsed = now - appStartTime
                         if (elapsed < 3000L && !wasWsConnected) {
                             statusDelayHandler.removeCallbacksAndMessages(null)
-                            statusDelayHandler.postDelayed({
-                                if (this@MainService.webSocket !== webSocket) return@postDelayed
-                                updateWsStatus("WSS: Unable to connect, retrying...")
-                                scheduleReconnect()
-                            }, 3000L - elapsed)
+                            statusDelayHandler.postDelayed(
+                                {
+                                    if (this@MainService.webSocket !== webSocket) return@postDelayed
+                                    updateWsStatus("WSS: Unable to connect, retrying...")
+                                    scheduleReconnect()
+                                },
+                                3000L - elapsed,
+                            )
                         } else {
                             val msg = if (wasWsConnected) "WSS: Connection lost, retrying..." else "WSS: Unable to connect, retrying..."
                             updateWsStatus(msg)
@@ -448,6 +449,8 @@ class MainService : LifecycleService() {
         if (isStreaming) {
             isStreaming = false
             stopAudio()
+            stopVideoEncoder()
+            configBuffer = null
             cameraProvider?.unbindAll()
             activeCamera = null
             onStatusChanged?.invoke()
@@ -475,21 +478,36 @@ class MainService : LifecycleService() {
             {
                 if (!isStreaming || lifecycle.currentState == Lifecycle.State.DESTROYED) return@addListener
                 cameraProvider = try { providerFuture.get() } catch (_: Exception) { return@addListener }
-                val resolutionSelector = ResolutionSelector.Builder()
-                    .setResolutionStrategy(ResolutionStrategy(Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+
+                encoderWidth = 1440
+                encoderHeight = 1080
+                initVideoEncoder(encoderWidth, encoderHeight)
+
+                val surface = inputSurface
+                if (surface == null) {
+                    Log.e("ScoutService", "Failed to get input surface")
+                    return@addListener
+                }
+
+                val preview = Preview.Builder()
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setResolutionStrategy(ResolutionStrategy(Size(encoderWidth, encoderHeight), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                            .build()
+                    )
                     .build()
-                val analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(resolutionSelector)
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                analysis.setAnalyzer(cameraExecutor) { imageProxy -> sendFrame(imageProxy) }
+
+                preview.setSurfaceProvider(cameraExecutor) { request ->
+                    request.provideSurface(surface, cameraExecutor) {
+                    }
+                }
+
                 val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 try {
                     cameraProvider?.unbindAll()
-                    val camera = cameraProvider?.bindToLifecycle(this, selector, analysis)
-                    activeCamera = camera
-                    camera?.let {
-                        val focusDistance = if (useFrontCamera) 0.0f else 0.0f
+                    activeCamera = cameraProvider?.bindToLifecycle(this, selector, preview)
+                    activeCamera?.let {
+                        val focusDistance = 0.0f
                         Camera2CameraControl.from(it.cameraControl).captureRequestOptions = CaptureRequestOptions.Builder()
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
@@ -503,25 +521,81 @@ class MainService : LifecycleService() {
         )
     }
 
-    private fun sendFrame(imageProxy: ImageProxy) {
-        val now = SystemClock.uptimeMillis()
-        val ws = webSocket
-        
-        if (ws == null || ((now - lastFrameSentAt) < 33L) || (ws.queueSize() > 150_000)) {
-            imageProxy.close()
-            return
-        }
+    private fun initVideoEncoder(width: Int, height: Int) {
+        synchronized(videoEncoderLock) {
+            if (videoEncoder != null) return
+            try {
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, 6_000_000)
+                format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
 
-        val jpegBytes = imageProxyToJpegOptimized(imageProxy)
-        imageProxy.close()
+                format.setInteger(MediaFormat.KEY_LATENCY, 0)
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
 
-        jpegBytes?.let {
-            val prefixed = ByteArray(it.size + 1)
-            prefixed[0] = 0x00 // Type: Video
-            System.arraycopy(it, 0, prefixed, 1, it.size)
-            if (ws.send(prefixed.toByteString())) {
-                lastFrameSentAt = now
+                format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+
+                videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                videoEncoder?.setCallback(object : MediaCodec.Callback() {
+                    override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
+                    override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                        val ws = webSocket
+                        if ((ws == null) || (ws.queueSize() > 64_000)) {
+                            codec.releaseOutputBuffer(index, false)
+                            return
+                        }
+                        val buffer = codec.getOutputBuffer(index) ?: return
+                        val data = ByteArray(info.size)
+                        buffer.get(data, 0, info.size)
+
+                        if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            configBuffer = data
+                        } else {
+                            val isKeyframe = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                            val config = configBuffer
+
+                            val outputData = if (isKeyframe && config != null) {
+                                val combined = ByteArray(config.size + data.size)
+                                System.arraycopy(config, 0, combined, 0, config.size)
+                                System.arraycopy(data, 0, combined, config.size, data.size)
+                                combined
+                            } else {
+                                data
+                            }
+
+                            val prefixed = ByteArray(outputData.size + 1)
+                            prefixed[0] = 0x02
+                            System.arraycopy(outputData, 0, prefixed, 1, outputData.size)
+                            ws.send(prefixed.toByteString())
+                        }
+                        codec.releaseOutputBuffer(index, false)
+                    }
+                    override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { e.printStackTrace() }
+                    override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
+                })
+                videoEncoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                inputSurface = videoEncoder?.createInputSurface()
+                videoEncoder?.start()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                videoEncoder = null
+                inputSurface = null
             }
+        }
+    }
+
+    private fun stopVideoEncoder() {
+        synchronized(videoEncoderLock) {
+            try {
+                videoEncoder?.stop()
+                videoEncoder?.release()
+            } catch (_: Exception) {}
+            videoEncoder = null
+            inputSurface?.release()
+            inputSurface = null
         }
     }
 
@@ -531,29 +605,36 @@ class MainService : LifecycleService() {
         val bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (bufferSize <= 0) return
 
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2)
+        audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2)
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
 
         isAudioRunning = true
-        audioThread = Thread({
-            val audioBuffer = ByteArray(4096)
-            val sendBuffer = ByteArray(audioBuffer.size + 1)
-            sendBuffer[0] = 0x01 // Type: Audio
-            
-            try {
-                audioRecord?.startRecording()
-                while (isAudioRunning && !isShuttingDown) {
-                    val read = audioRecord?.read(audioBuffer, 0, audioBuffer.size) ?: 0
-                    if (read > 0) {
-                        val ws = webSocket
-                        if (ws != null && ws.queueSize() < 50_000) {
-                            System.arraycopy(audioBuffer, 0, sendBuffer, 1, read)
-                            ws.send(sendBuffer.toByteString(0, read + 1))
+        audioThread = Thread(
+            {
+                val audioBuffer = ByteArray(4096)
+                val sendBuffer = ByteArray(audioBuffer.size + 1)
+                sendBuffer[0] = 0x01
+
+                try {
+                    audioRecord?.startRecording()
+                    while (isAudioRunning && !isShuttingDown) {
+                        val read = audioRecord?.read(audioBuffer, 0, audioBuffer.size) ?: 0
+                        if (read > 0) {
+                            val ws = webSocket
+                            if (ws != null && ws.queueSize() < 50_000) {
+                                System.arraycopy(audioBuffer, 0, sendBuffer, 1, read)
+                                ws.send(sendBuffer.toByteString(0, read + 1))
+                            }
                         }
                     }
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {}
-        }, "MicStreamThread").apply { priority = Thread.MAX_PRIORITY; start() }
+            },
+            "MicStreamThread",
+        ).apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
     }
 
     private fun stopAudio() {
@@ -564,57 +645,6 @@ class MainService : LifecycleService() {
         } catch (_: Exception) {}
         audioRecord = null
         audioThread = null
-    }
-
-    private var vRowArr = ByteArray(0)
-    private var uRowArr = ByteArray(0)
-
-    private fun imageProxyToJpegOptimized(imageProxy: ImageProxy): ByteArray? {
-        if (imageProxy.format != ImageFormat.YUV_420_888) return null
-        val width = imageProxy.width
-        val height = imageProxy.height
-        val size = (width * height * 3) / 2
-        if (yuvBuffer == null || yuvBuffer?.size != size) { yuvBuffer = ByteArray(size) }
-        val nv21 = yuvBuffer!!
-        val yPlane = imageProxy.planes[0]
-        val uPlane = imageProxy.planes[1]
-        val vPlane = imageProxy.planes[2]
-        val yBuffer = yPlane.buffer
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
-        val yRowStride = yPlane.rowStride
-        if (yRowStride == width) { yBuffer.get(nv21, 0, width * height) } 
-        else { for (row in 0 until height) { yBuffer.position(row * yRowStride); yBuffer.get(nv21, row * width, width) } }
-        val uvOffset = width * height
-        val uPixelStride = uPlane.pixelStride
-        val vPixelStride = vPlane.pixelStride
-        val uRowStride = uPlane.rowStride
-        val vRowStride = vPlane.rowStride
-        val uvWidth = width / 2
-        val uvHeight = height / 2
-        if (vPixelStride == 2 && uPixelStride == 2 && vRowStride == uRowStride) {
-            for (row in 0 until uvHeight) {
-                vBuffer.position(row * vRowStride)
-                vBuffer.get(nv21, uvOffset + row * width, min(width, vBuffer.remaining()))
-            }
-        } else {
-            if (vRowArr.size < vRowStride) vRowArr = ByteArray(vRowStride)
-            if (uRowArr.size < uRowStride) uRowArr = ByteArray(uRowStride)
-            for (row in 0 until uvHeight) {
-                vBuffer.position(row * vRowStride)
-                vBuffer.get(vRowArr, 0, min(vRowStride, vBuffer.remaining()))
-                uBuffer.position(row * uRowStride)
-                uBuffer.get(uRowArr, 0, min(uRowStride, uBuffer.remaining()))
-                for (col in 0 until uvWidth) {
-                    nv21[uvOffset + row * width + col * 2] = vRowArr[col * vPixelStride]
-                    nv21[uvOffset + row * width + col * 2 + 1] = uRowArr[col * uPixelStride]
-                }
-            }
-        }
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        jpegOutputStream.reset()
-        yuvImage.compressToJpeg(Rect(0, 0, width, height), 75, jpegOutputStream)
-        return jpegOutputStream.toByteArray()
     }
 
     private fun connectUsb() {
@@ -652,7 +682,7 @@ class MainService : LifecycleService() {
             port?.close()
             status?.let { newStatus ->
                 updateUsbStatus(newStatus)
-                if (newStatus.contains("failed") || newStatus.contains("Disconnected") || newStatus.contains("found")) { scheduleUsbReconnect() } 
+                if (newStatus.contains("failed") || newStatus.contains("Disconnected") || newStatus.contains("found")) { scheduleUsbReconnect() }
                 else { usbReconnectHandler.removeCallbacksAndMessages(null) }
             }
         }
@@ -740,6 +770,7 @@ class MainService : LifecycleService() {
         unregisterReceiver(batteryReceiver)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         cameraProvider?.unbindAll()
+        stopVideoEncoder()
         webSocket?.close(1000, null)
         webSocket = null
         serial?.write(byteArrayOf(COMMAND_CENTER))
