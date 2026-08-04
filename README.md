@@ -76,7 +76,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ### Relay Server (Node.js)
 - Two separate HTTPS/WSS servers on different ports: one for the Android publisher (`47291`) and one for browser viewers (`3000`).
 - The publisher connection uses **mutual TLS** — a self-signed certificate is auto-generated with OpenSSL on first run and must be installed as a raw resource in the Android app (`res/raw/cert.cer`). The Android app pins this certificate using a custom `TrustManager`.
-- The viewer server uses plain HTTP/WS (suitable for LAN; add a reverse proxy with a real cert for internet access).
+- The viewer server uses plain HTTP/WS and is intended for local network use only.
 - The server caches the last message of each telemetry type (`battery`, `wifi`, `cell`, `car_battery`, `usb_status`, `gps`) and replays them immediately to any viewer that connects mid-session, so the HUD is fully populated on join.
 - Only one publisher is permitted at a time; a new connection closes the previous one.
 - Binary video/audio frames are forwarded only when the viewer's `bufferedAmount` is zero, providing natural backpressure to prevent buffer bloat.
