@@ -164,32 +164,36 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 
 This section explains how to connect your servo and ESC to the Arduino if you haven't done it before.
 
+### Power supply (important — read this first)
+
+The Arduino is powered by **two sources simultaneously**, and both must be connected for a stable link:
+
+- **USB from the Android phone** — the phone connects to the Arduino's USB port (via an OTG adapter if needed). This powers the Arduino and carries the serial data link.
+- **ESC BEC via VIN** — the servo and ESC power wires (red V+ and black GND) connect to the Arduino's **VIN** and **GND** pins. The ESC's BEC powers the servo and the Arduino through this rail.
+
 ### What you need to know about servo connectors
 
 Both a standard RC servo and an ESC's control input use the same 3-wire connector:
 
-| Wire colour (typical) | Signal   | Description                                      |
-|-----------------------|----------|--------------------------------------------------|
-| Brown or Black        | GND      | Ground — must be shared with the Arduino         |
-| Red                   | V+ (5 V) | Power — **do not connect to Arduino 5 V pin**    |
-| Orange or White       | Signal   | PWM control signal from the Arduino              |
-
-> **Important:** The red (V+) wire on a servo or ESC receiver connection carries power from the ESC's BEC or from a separate servo power supply. Do **not** connect it to the Arduino's 5 V pin. Leaving the red wire unconnected on the ESC signal lead is safe and common practice; the Arduino gets its own power from USB.
+| Wire colour (typical) | Signal | Description                                  |
+|-----------------------|--------|----------------------------------------------|
+| Brown or Black        | GND    | Ground — must be shared with the Arduino     |
+| Red                   | V+     | Power — connect to Arduino **VIN** (not 5 V) |
+| Orange or White       | Signal | PWM control signal from the Arduino          |
 
 ### Steering servo (pin 10)
 
-1. Plug the servo's 3-pin connector onto a row of three male header pins wired to the Arduino (or into a breadboard).
-2. Connect the **signal (orange/white) wire to Arduino digital pin 10**.
-3. Connect the **ground (brown/black) wire to any Arduino GND pin**.
-4. The red wire can be left unconnected if your servo is powered from the car's existing receiver power rail, or connected to a 5 V BEC if you're powering the servo separately.
+1. Connect the **signal (orange/white) wire to Arduino digital pin 10**.
+2. Connect the **ground (brown/black) wire to any Arduino GND pin**.
+3. Connect the **red (V+) wire to Arduino VIN**. The servo is powered from the ESC's BEC through this rail.
 
 ### ESC (pin 9)
 
-The ESC has two connectors: thick wires going to the motor and battery, and a thin 3-pin servo-style lead that carries the control signal. Connect only the thin control lead to the Arduino:
+The ESC has two connectors: thick wires going to the motor and battery, and a thin 3-pin servo-style control lead. Connect both:
 
 1. Connect the **signal (orange/white) wire to Arduino digital pin 9**.
-2. Connect the **ground (brown/black) wire to any Arduino GND pin**. This ground bond between the Arduino and the ESC is important — without it, the signal has no return path and the ESC won't respond correctly.
-3. Leave the red wire on the ESC control lead unconnected (the Arduino is powered from USB, not from the ESC's BEC).
+2. Connect the **ground (brown/black) wire to any Arduino GND pin**.
+3. Connect the **red (V+) wire to Arduino VIN**. This allows the ESC's BEC to power the Arduino alongside the USB supply.
 
 ### Battery voltage divider (pin A0)
 
@@ -211,12 +215,13 @@ Battery+ ──┤ 4.64 kΩ ├──┬──┤ 1.17 kΩ ├── GND
 ```
 Arduino pin 10  ──── Servo signal wire
 Arduino pin 9   ──── ESC control signal wire
+Arduino VIN     ──── Servo V+  +  ESC control V+  (ESC BEC powers servo and Arduino)
 Arduino GND     ──── Servo GND  +  ESC control GND  +  battery negative  +  divider bottom
 Arduino A0      ──── Junction of 4.64 kΩ / 1.17 kΩ divider
 Arduino USB     ──── Android phone (via OTG adapter if needed)
 ```
 
-The Arduino is powered entirely from the Android phone over USB — no separate 5 V supply is needed.
+Both the USB connection to the phone and the ESC BEC via VIN must be active simultaneously for a stable serial link.
 
 ---
 
