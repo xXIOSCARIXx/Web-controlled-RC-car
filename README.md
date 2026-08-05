@@ -217,7 +217,7 @@ Battery+ ──┤ 4.64 kΩ ├──┬──┤ 1.17 kΩ ├── GND
 Arduino pin 10  ──── Servo signal wire
 Arduino pin 9   ──── ESC control signal wire
 Arduino VIN     ──── Servo V+  +  ESC control V+  (ESC BEC powers servo and Arduino)
-Arduino GND     ──── Servo GND  +  ESC control GND  +  battery negative  +  divider bottom
+Arduino GND     ──── Servo GND  +  ESC control GND (battery negative shared via ESC)  +  divider bottom
 Arduino A0      ──── Junction of 4.64 kΩ / 1.17 kΩ divider
 Arduino USB     ──── Android phone (via OTG adapter if needed)
 ```
