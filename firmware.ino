@@ -4,7 +4,7 @@ const int STEER_PIN = 10;
 const int ESC_PIN = 9;
 const int BAT_PIN = A0;
 
-const int STEER_CENTER_US = 1460;
+const int STEER_CENTER_US = 1500;
 const int ESC_NEUTRAL_US = 1500;
 
 const unsigned long COMMAND_TIMEOUT = 500;
