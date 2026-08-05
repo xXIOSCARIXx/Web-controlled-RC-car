@@ -229,9 +229,33 @@
             font: 12px/1.6 monospace;
             color: #888;
         }
-        #audio-btn {
+        #stats-overlay {
             position: fixed;
             top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            pointer-events: none;
+            z-index: 9990;
+        }
+        .stat-pill {
+            padding: 3px 9px;
+            border-radius: 5px;
+            background: rgba(0,0,0,0.55);
+            border: 1px solid #2a2a2a;
+            font: bold 11px/1.6 monospace;
+            color: #6cf;
+            white-space: nowrap;
+            backdrop-filter: blur(3px);
+            letter-spacing: 0.04em;
+        }
+        .stat-pill.warn { color: #fa4; }
+        .stat-pill.crit { color: #f44; }
+        .stat-pill.dim  { color: #555; }
+        #audio-btn {
+            position: fixed;
+            top: 46px;
             left: 50%;
             transform: translateX(-50%);
             padding: 4px 12px;
@@ -314,6 +338,41 @@
             0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,136,0,0.5); }
             50%       { opacity: 0.6; box-shadow: 0 0 0 18px rgba(255,136,0,0); }
         }
+        @keyframes alarm-pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,180,0,0.5); }
+            50%       { opacity: 0.6; box-shadow: 0 0 0 18px rgba(255,180,0,0); }
+        }
+        #alarm-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 99998;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        #alarm-overlay.visible {
+            display: flex;
+        }
+        #alarm-overlay-box {
+            padding: 18px 36px;
+            border-radius: 10px;
+            background: rgba(20,15,0,0.78);
+            border: 2px solid #fb0;
+            color: #fda;
+            font: bold 18px/1.5 monospace;
+            letter-spacing: 0.08em;
+            text-align: center;
+            backdrop-filter: blur(6px);
+            animation: alarm-pulse 1.0s ease-in-out infinite;
+        }
+        #alarm-overlay-box small {
+            display: block;
+            margin-top: 4px;
+            font: 11px/1.4 monospace;
+            color: #a83;
+            letter-spacing: 0.04em;
+        }
     </style>
 </head>
 <body>
@@ -381,7 +440,18 @@
         <small id="conn-lost-sub">Publisher disconnected</small>
     </div>
 </div>
+<div id="alarm-overlay">
+    <div id="alarm-overlay-box">
+        🔔 ALARM ACTIVE 🔔
+        <small>Press X to silence</small>
+    </div>
+</div>
 <button id="audio-btn">🔇 Audio off</button>
+<div id="stats-overlay">
+    <div class="stat-pill dim" id="stat-fps">-- FPS</div>
+    <div class="stat-pill dim" id="stat-lat">-- ms</div>
+    <div class="stat-pill dim" id="stat-viewers">0 👁</div>
+</div>
 <script>
     const canvas = document.getElementById('stream');
     const ctx = canvas.getContext('2d');
@@ -399,6 +469,26 @@
     let videoDecoder = null;
     let decoderSeenKeyframe = false;
     let lastFrame = null;
+    const statFps     = document.getElementById('stat-fps');
+    const statLat     = document.getElementById('stat-lat');
+    const statViewers = document.getElementById('stat-viewers');
+
+    let fpsFrameCount = 0;
+    let fpsLastTime   = performance.now();
+    let currentFps    = 0;
+
+    setInterval(() => {
+        const now = performance.now();
+        const elapsed = (now - fpsLastTime) / 1000;
+        currentFps = elapsed > 0 ? Math.round(fpsFrameCount / elapsed) : 0;
+        fpsFrameCount = 0;
+        fpsLastTime   = now;
+
+        statFps.textContent = currentFps + ' FPS';
+        const fpsBad = currentFps < 15;
+        const fpsWarn = currentFps < 24;
+        statFps.className = 'stat-pill' + (currentFps === 0 ? ' dim' : fpsBad ? ' crit' : fpsWarn ? ' warn' : '');
+    }, 1000);
 
     function nalType(data, i, scLen) {
         return data[i + scLen] & 0x1f;
@@ -426,6 +516,7 @@
         if (lastFrame) lastFrame.close();
         lastFrame = frame;
         paintFrame(frame);
+        fpsFrameCount++;
     }
 
     function createDecoder() {
@@ -442,7 +533,7 @@
             },
         });
         videoDecoder.configure({
-            codec: 'avc1.42E028',
+            codec: 'avc1.42E01F',
             hardwareAcceleration: 'prefer-hardware',
             optimizeForLatency: true,
         });
@@ -551,6 +642,18 @@
 
     const ws = new WebSocket(`wss://${location.host}?role=viewer`);
     ws.binaryType = 'arraybuffer';
+    let pingPendingTs  = null;
+    let latencyMs      = null;
+
+    function sendPing() {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        pingPendingTs = performance.now();
+        ws.send(JSON.stringify({ type: 'ping', ts: pingPendingTs }));
+    }
+    ws.addEventListener('open', () => {
+        sendPing();
+        setInterval(sendPing, 2000);
+    });
 
     const connLost      = document.getElementById('conn-lost');
     const connLostTitle = document.getElementById('conn-lost-title');
@@ -558,8 +661,20 @@
     let publisherEverConnected = false;
     let connLostTimer = null;
 
+    function resetStats() {
+        fpsFrameCount = 0;
+        currentFps    = 0;
+        latencyMs     = null;
+        pingPendingTs = null;
+        statFps.textContent = '-- FPS';
+        statFps.className   = 'stat-pill dim';
+        statLat.textContent = '-- ms';
+        statLat.className   = 'stat-pill dim';
+    }
+
     function showConnLost() {
         if (connLostTimer) return;
+        resetStats();
         connLostTimer = setTimeout(() => {
             connLostTimer = null;
             if (!publisherEverConnected) {
@@ -674,12 +789,32 @@
             let msg;
             try { msg = JSON.parse(event.data); } catch { return; }
             if (msg.type === 'publisher_disconnected') {
+                alarmActive = false;
+                document.getElementById('alarm-overlay').classList.remove('visible');
                 showConnLost();
                 return;
             }
             if (msg.type === 'publisher_status') {
                 if (msg.connected) hideConnLost();
-                else showConnLost();
+                else {
+                    alarmActive = false;
+                    document.getElementById('alarm-overlay').classList.remove('visible');
+                    showConnLost();
+                }
+                return;
+            }
+            if (msg.type === 'pong') {
+                if (pingPendingTs !== null) {
+                    latencyMs = Math.round(performance.now() - pingPendingTs);
+                    pingPendingTs = null;
+                    statLat.textContent = latencyMs + ' ms';
+                    statLat.className = 'stat-pill' + (latencyMs > 500 ? ' crit' : latencyMs > 200 ? ' warn' : '');
+                }
+                return;
+            }
+            if (msg.type === 'viewer_count') {
+                statViewers.textContent = msg.count + ' 👁';
+                statViewers.className = 'stat-pill' + (msg.count === 0 ? ' dim' : '');
                 return;
             }
             if (msg.type === 'car_battery') {
@@ -701,6 +836,11 @@
             }
             if (msg.type === 'cell') {
                 updateCell(msg.level);
+            }
+            if (msg.type === 'alarm_state') {
+                alarmActive = msg.active;
+                document.getElementById('alarm-overlay').classList.toggle('visible', msg.active);
+                return;
             }
             if (msg.type === 'gps') {
                 const { lat, lng, acc } = msg;
@@ -752,6 +892,8 @@
     let dpadPrev   = [false, false];
     let aPrev      = false;
     let bPrev      = false;
+    let xPrev      = false;
+    let alarmActive = false;
 
     setInterval(() => {
         const pad = activePad();
@@ -787,6 +929,12 @@
             ws.send(JSON.stringify({ type: 'toggle_camera' }));
         }
         bPrev = bPressed;
+
+        const xPressed = !!(pad.buttons[2]?.pressed);
+        if (xPressed && !xPrev && ws.readyState === WebSocket.OPEN && !connLost.classList.contains('visible')) {
+            ws.send(JSON.stringify({ type: 'toggle_alarm' }));
+        }
+        xPrev = xPressed;
 
         const rawSteer = q(dz(pad.axes[0] ?? 0));
         const steer    = q(clamp(rawSteer + steerTrim, -1, 1));

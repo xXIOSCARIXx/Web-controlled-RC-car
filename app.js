@@ -37,10 +37,16 @@ let lastCellMsg       = null;
 let lastCarBatteryMsg = null;
 let lastUsbStatusMsg  = null;
 let lastGpsMsg        = null;
+let alarmActive       = false;
 
 function notifyPublisherViewerCount() {
+    const count = viewers.size;
     if (publisher && publisher.readyState === WebSocket.OPEN) {
-        publisher.send(JSON.stringify({ type: 'viewer_count', count: viewers.size }));
+        publisher.send(JSON.stringify({ type: 'viewer_count', count }));
+    }
+    const msg = JSON.stringify({ type: 'viewer_count', count });
+    for (const viewer of viewers) {
+        if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);
     }
 }
 
@@ -108,6 +114,16 @@ pubWss.on('connection', (ws, _req) => {
                     }
                     return;
                 }
+                if (msg.type === 'pong') {
+                    const vid = msg._vid;
+                    for (const viewer of viewers) {
+                        if (viewer._pingId === vid && viewer.readyState === WebSocket.OPEN) {
+                            viewer.send(data.toString());
+                            break;
+                        }
+                    }
+                    return;
+                }
             } catch {}
 
             for (const viewer of viewers) {
@@ -144,6 +160,7 @@ pubWss.on('connection', (ws, _req) => {
     ws.on('close', () => {
         if (publisher === ws) {
             publisher = null;
+            alarmActive = false;
             const msg = JSON.stringify({ type: 'publisher_disconnected' });
             for (const viewer of viewers) {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);
@@ -183,6 +200,9 @@ viewWss.on('connection', (ws, req) => {
                 ws.send(cached);
             }
         }
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'alarm_state', active: alarmActive }));
+        }
     }
 
     notifyPublisherViewerCount();
@@ -201,9 +221,27 @@ viewWss.on('connection', (ws, req) => {
                 publisher.send(msg);
             }
         }
+        if (type === 'toggle_alarm') {
+            alarmActive = !alarmActive;
+            const alarmMsg = JSON.stringify({ type: alarmActive ? 'play_alarm' : 'stop_alarm' });
+            if (publisher && publisher.readyState === WebSocket.OPEN) {
+                publisher.send(alarmMsg);
+            }
+            const stateMsg = JSON.stringify({ type: 'alarm_state', active: alarmActive });
+            for (const viewer of viewers) {
+                if (viewer.readyState === WebSocket.OPEN) viewer.send(stateMsg);
+            }
+        }
         if (type === 'gps') {
             for (const viewer of viewers) {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);
+            }
+        }
+        if (type === 'ping') {
+            if (publisher && publisher.readyState === WebSocket.OPEN) {
+                ws._pingId = ws._pingId || (Math.random().toString(36).slice(2));
+                publisher.send(JSON.stringify({ type: 'ping', ts: parsed.ts, _vid: ws._pingId }));
+                ws._awaitingPong = true;
             }
         }
     });
