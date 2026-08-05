@@ -1,9 +1,7 @@
-@file:Suppress("DEPRECATION")
 package com.shadowscoutx
 
 import android.annotation.SuppressLint
 import android.util.Range
-import android.util.Log
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -20,7 +18,10 @@ import android.hardware.usb.UsbManager
 import android.location.Location
 import android.net.wifi.WifiManager
 import android.os.*
-import android.telephony.PhoneStateListener
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
+import android.telephony.TelephonyCallback
 import android.telephony.SignalStrength
 import android.telephony.TelephonyManager
 import androidx.camera.camera2.interop.Camera2CameraControl
@@ -114,6 +115,7 @@ class MainService : LifecycleService() {
     private var isAudioRunning = false
 
     private var mediaPlayer: MediaPlayer? = null
+    private var honkPlayer: MediaPlayer? = null
 
     private var wifiLevel = 0
     private var cellLevel = 0
@@ -125,36 +127,64 @@ class MainService : LifecycleService() {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun updateSignalInfo() {
         val wm = getSystemService(WIFI_SERVICE) as WifiManager
-        val info = wm.connectionInfo
-        if (info.networkId != -1) {
-            wifiLevel = WifiManager.calculateSignalLevel(info.rssi, 5)
-            webSocket?.send("""{"type":"wifi","level":$wifiLevel}""")
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork
+        val caps = cm.getNetworkCapabilities(network)
+        if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                caps.transportInfo as? WifiInfo
+            } else {
+                @Suppress("DEPRECATION")
+                wm.connectionInfo
+            }
+            if (wifiInfo != null) {
+                wifiLevel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    wm.calculateSignalLevel(wifiInfo.rssi)
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.calculateSignalLevel(wifiInfo.rssi, 5)
+                }
+                webSocket?.send("""{"type":"wifi","level":$wifiLevel}""")
+            }
         } else {
             wifiLevel = 0
         }
     }
 
-    @Suppress("DEPRECATION")
-    private val phoneStateListener = object : PhoneStateListener() {
-        @Deprecated("Deprecated in Java", ReplaceWith("onSignalStrengthsChanged(signalStrength)"))
-        override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
-            super.onSignalStrengthsChanged(signalStrength)
-            val level = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                signalStrength.level
-            } else {
-                try {
-                    val getLevel = SignalStrength::class.java.getMethod("getLevel")
-                    getLevel.invoke(signalStrength) as Int
-                } catch (_: Exception) {
-                    0
-                }
+    private val telephonyCallback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        object : TelephonyCallback(), TelephonyCallback.SignalStrengthsListener {
+            @Deprecated("Deprecated in Java")
+            override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
+                updateSignalLevel(signalStrength)
             }
-            cellLevel = level
-            webSocket?.send("""{"type":"cell","level":$cellLevel}""")
         }
+    } else null
+
+    private val phoneStateListener = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        @Suppress("DEPRECATION")
+        object : android.telephony.PhoneStateListener() {
+            @Deprecated("Deprecated in Java")
+            override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
+                updateSignalLevel(signalStrength)
+            }
+        }
+    } else null
+
+    private fun updateSignalLevel(signalStrength: SignalStrength) {
+        val level = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            signalStrength.level
+        } else {
+            try {
+                val getLevel = SignalStrength::class.java.getMethod("getLevel")
+                getLevel.invoke(signalStrength) as Int
+            } catch (_: Exception) {
+                0
+            }
+        }
+        cellLevel = level
+        webSocket?.send("""{"type":"cell","level":$cellLevel}""")
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -201,11 +231,12 @@ class MainService : LifecycleService() {
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> connectUsb()
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    @Suppress("DEPRECATION")
-                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    else
+                    } else {
+                        @Suppress("DEPRECATION")
                         intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                    }
                     if ((device == null) || (device.deviceName == (serial?.deviceName ?: "")))
                         closeSerial("USB: Disconnected")
                 }
@@ -247,8 +278,12 @@ class MainService : LifecycleService() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-        @Suppress("DEPRECATION")
-        tm.listen(phoneStateListener, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            telephonyCallback?.let { tm.registerTelephonyCallback(mainExecutor, it) }
+        } else {
+            @Suppress("DEPRECATION")
+            tm.listen(phoneStateListener, android.telephony.PhoneStateListener.LISTEN_SIGNAL_STRENGTHS)
+        }
         signalHandler.post(signalRunnable)
 
         val filter = IntentFilter(ACTION_USB_PERMISSION).apply {
@@ -295,9 +330,8 @@ class MainService : LifecycleService() {
         manager.notify(NOTIFICATION_ID, createNotification("$wsStatus | $camStatus"))
     }
 
-    @SuppressLint("DiscouragedApi")
     private fun buildTrustedClient(): OkHttpClient {
-        val resId = resources.getIdentifier("cert", "raw", packageName)
+        val resId = try { R.raw.cert } catch (_: Exception) { 0 }
         if (resId == 0) {
             return OkHttpClient.Builder()
                 .hostnameVerifier { _, _ -> true }
@@ -406,6 +440,14 @@ class MainService : LifecycleService() {
                             Handler(Looper.getMainLooper()).post { stopAlarm() }
                             return
                         }
+                        "play_honk" -> {
+                            Handler(Looper.getMainLooper()).post { playHonk() }
+                            return
+                        }
+                        "stop_honk" -> {
+                            Handler(Looper.getMainLooper()).post { stopHonk() }
+                            return
+                        }
                     }
                     if ((json.optString("type") != "gamepad") || !json.optBoolean("connected")) return
                     val axes = json.optJSONArray("axes")
@@ -500,11 +542,7 @@ class MainService : LifecycleService() {
                 encoderHeight = 720
                 initVideoEncoder(encoderWidth, encoderHeight)
 
-                val surface = inputSurface
-                if (surface == null) {
-                    Log.e("ScoutService", "Failed to get input surface")
-                    return@addListener
-                }
+                val surface = inputSurface ?: return@addListener
 
                 val preview = Preview.Builder()
                     .setResolutionSelector(
@@ -536,7 +574,7 @@ class MainService : LifecycleService() {
 
                         Camera2CameraControl.from(it.cameraControl).captureRequestOptions = builder.build()
                     }
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (_: Exception) { }
             },
             ContextCompat.getMainExecutor(this),
         )
@@ -594,14 +632,13 @@ class MainService : LifecycleService() {
                         }
                         codec.releaseOutputBuffer(index, false)
                     }
-                    override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { e.printStackTrace() }
+                    override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { }
                     override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
                 })
                 videoEncoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 inputSurface = videoEncoder?.createInputSurface()
                 videoEncoder?.start()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Exception) {
                 videoEncoder = null
                 inputSurface = null
             }
@@ -675,8 +712,7 @@ class MainService : LifecycleService() {
                 isLooping = true
                 start()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
     }
 
@@ -686,6 +722,25 @@ class MainService : LifecycleService() {
             mediaPlayer?.release()
         } catch (_: Exception) {}
         mediaPlayer = null
+    }
+
+    private fun playHonk() {
+        stopHonk()
+        try {
+            honkPlayer = MediaPlayer.create(this, R.raw.honk).apply {
+                isLooping = true
+                start()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun stopHonk() {
+        try {
+            honkPlayer?.stop()
+            honkPlayer?.release()
+        } catch (_: Exception) {}
+        honkPlayer = null
     }
 
     private fun connectUsb() {
@@ -801,18 +856,23 @@ class MainService : LifecycleService() {
         reconnectHandler.removeCallbacksAndMessages(null)
         usbReconnectHandler.removeCallbacksAndMessages(null)
         statusDelayHandler.removeCallbacksAndMessages(null)
-        stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
         wakeLock?.release()
         signalHandler.removeCallbacks(signalRunnable)
         val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-        @Suppress("DEPRECATION")
-        tm.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            telephonyCallback?.let { tm.unregisterTelephonyCallback(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            tm.listen(phoneStateListener, android.telephony.PhoneStateListener.LISTEN_NONE)
+        }
         unregisterReceiver(batteryReceiver)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         cameraProvider?.unbindAll()
         stopVideoEncoder()
         stopAlarm()
+        stopHonk()
         webSocket?.close(1000, null)
         webSocket = null
         serial?.write(byteArrayOf(COMMAND_CENTER))
