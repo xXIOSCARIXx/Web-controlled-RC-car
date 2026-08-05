@@ -207,7 +207,7 @@ Battery+ ──┤ 4.64 kΩ ├──┬──┤ 1.17 kΩ ├── GND
 ```
 
 - The junction between the two resistors connects to **Arduino analog pin A0**.
-- The bottom resistor goes to **Arduino GND** (which must also be connected to the battery negative terminal so they share a common ground).
+- The bottom resistor goes to **Arduino GND**. Ground is shared with the battery negative terminal via the ESC's ground wire, which is already connected to Arduino GND as described above — no separate wire from the battery negative to the Arduino is needed.
 - This scales a nominal 3S LiPo pack (≈12.6 V max) down to under 5 V, safe for the Arduino's ADC.
 - If you need a different voltage range, keep the ratio `(R_high + R_low) / R_low` correct and adjust `BAT_CALIBRATION` in the sketch if readings are slightly off.
 
