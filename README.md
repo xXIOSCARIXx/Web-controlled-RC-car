@@ -270,13 +270,13 @@ The Android app is not available as a pre-built APK. You must build it yourself 
 1. Install [Android Studio](https://developer.android.com/studio) (Hedgehog or newer recommended).
 2. Clone this repository and open the `android/` folder as an Android Studio project.
 3. Generate the relay server certificate first (run `node app.js` once), then copy `ssl/cert.cer` to `android/app/src/main/res/raw/cert.cer`.
-4. Add your alarm and honk audio files as `android/app/src/main/res/raw/alarm.wav` and `honk.wav`.
-5. Connect your Android phone via USB, enable Developer Options and USB Debugging.
-6. Build and install: **Run ▶ → Run 'app'**, or from the terminal:
+
+4. Connect your Android phone via USB, enable Developer Options and USB Debugging.
+5. Build and install: **Run ▶ → Run 'app'**, or from the terminal:
    ```bash
    ./gradlew installDebug
    ```
-7. On first launch, enter your relay server's IP address or hostname when prompted.
+6. On first launch, enter your relay server's IP address or hostname when prompted.
 
 **Required permissions** (declared in `AndroidManifest.xml`, requested at runtime):
 - `CAMERA`
