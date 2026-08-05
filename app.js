@@ -232,6 +232,11 @@ viewWss.on('connection', (ws, req) => {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(stateMsg);
             }
         }
+        if (type === 'play_honk' || type === 'stop_honk') {
+            if (publisher && publisher.readyState === WebSocket.OPEN) {
+                publisher.send(msg);
+            }
+        }
         if (type === 'gps') {
             for (const viewer of viewers) {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);

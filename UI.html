@@ -893,6 +893,7 @@
     let aPrev      = false;
     let bPrev      = false;
     let xPrev      = false;
+    let yPrev      = false;
     let alarmActive = false;
 
     setInterval(() => {
@@ -935,6 +936,15 @@
             ws.send(JSON.stringify({ type: 'toggle_alarm' }));
         }
         xPrev = xPressed;
+
+        const yPressed = !!(pad.buttons[3]?.pressed);
+        if (yPressed && !yPrev && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'play_honk' }));
+        }
+        if (!yPressed && yPrev && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'stop_honk' }));
+        }
+        yPrev = yPressed;
 
         const rawSteer = q(dz(pad.axes[0] ?? 0));
         const steer    = q(clamp(rawSteer + steerTrim, -1, 1));
