@@ -17,11 +17,11 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ## Features
 
 ### Live Video Streaming
-- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 6 Mbps VBR, 30 fps, Baseline profile Level 4).
+- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 5 Mbps VBR, 30 fps, Baseline profile Level 3.1).
 - The encoder is configured with `KEY_I_FRAME_INTERVAL = 0` so every frame is eligible to be a keyframe; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR.
 - Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
 - The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
-- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`) with both optical and video stabilization disabled to minimise encoder complexity and latency.
+- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`) with both optical and video stabilization disabled to minimise encoder complexity and latency. Exposure compensation is set to +2 EV.
 - Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI.
 - Camera capture and audio recording only start when at least one viewer is connected; they stop automatically when all viewers disconnect, saving power and resources.
 
@@ -43,6 +43,10 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Alarm state is tracked server-side and broadcast to all connected viewers, so the overlay stays in sync across multiple browser sessions.
 - The alarm is automatically stopped and the overlay cleared when the publisher disconnects.
 
+### Horn / Honk
+- A horn sound (`res/raw/honk`) can be triggered remotely from the viewer UI.
+- `play_honk` / `stop_honk` messages are forwarded by the relay server to the Android app, which plays or stops a looping `MediaPlayer` instance independently of the alarm.
+
 ### GPS Tracking
 - Uses Google's Fused Location Provider for high-accuracy GPS with a preferred 2-second update interval and a minimum 1-second interval.
 - Coordinates and accuracy are streamed as JSON to the relay server and forwarded to all viewers in real time.
@@ -53,7 +57,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ### Android Phone Telemetry (HUD)
 - **Phone battery**: Level streamed as JSON and shown as a colour-coded battery icon (green → amber → red as it depletes).
 - **Wi-Fi signal**: RSSI polled every 5 seconds and shown as a 4-bar arc signal widget.
-- **Cellular signal**: Reported via `PhoneStateListener` and shown as a 4-bar signal widget. Covers Android 9 through 14+. A pulsing red warning banner appears when signal is weak (level ≤ 2).
+- **Cellular signal**: Reported via `TelephonyCallback` / `PhoneStateListener` and shown as a 4-bar signal widget. Covers Android 9 through 14+. A pulsing red warning banner appears when signal is weak (level ≤ 2).
 
 ### Car Battery Monitoring
 - The Arduino samples its battery voltage via a resistor-divider on analog pin A0, averages 16 ADC readings, and sends a 3-byte binary packet (`'B'` + 2 voltage bytes) over USB serial every 500 ms.
@@ -75,7 +79,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - **ESC arming sequence**: On power-up the ESC is held at neutral for 2 seconds (`ARM_HOLD_MS`) before drive commands are accepted, satisfying standard ESC arming requirements.
 - **Command watchdog**: If no valid drive packet is received within 500 ms (`COMMAND_TIMEOUT`), steering centres and the ESC returns to neutral. The built-in LED mirrors link state (on = link alive).
 - **Battery telemetry**: Voltage is read from a 4.64 kΩ / 1.17 kΩ resistor divider, averaged over 16 samples, calibrated (`BAT_CALIBRATION = 0.994`), and sent upstream at 2 Hz.
-- Steering centre trim: `STEER_CENTER_US = 1460 µs` (adjustable per vehicle).
+- Steering centre trim: `STEER_CENTER_US = 1500 µs` (adjustable per vehicle).
 
 ### Viewer Stats Overlay & Connection State
 - A top-centre stats bar shows three colour-coded pills: **FPS** (green / amber below 24 / red below 15), **latency** (round-trip ping time to the phone; amber above 200 ms / red above 500 ms), and **viewer count**.
@@ -100,6 +104,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Only one publisher is permitted at a time; a new connection closes the previous one.
 - H.264 binary frames are forwarded only when the viewer's `bufferedAmount` is below 256 KB, and non-keyframe frames are dropped for lagging viewers, providing natural backpressure to prevent buffer bloat.
 - Viewer-initiated messages (`toggle_camera`, `toggle_torch`, `gamepad`) are forwarded upstream to the publisher only when the publisher's `bufferedAmount` is zero.
+- `play_honk` and `stop_honk` messages from any viewer are forwarded directly to the publisher.
 - The publisher is notified of viewer count changes and individual viewer connect/disconnect events.
 
 ### Android App UI
@@ -125,7 +130,8 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
     ├── MainService.kt
     ├── UsbCdcSerial.kt
     └── app/src/main/res/raw/
-        └── alarm.wav   # Alarm sound played by the remote alarm feature
+        ├── alarm.wav   # Alarm sound played by the remote alarm feature
+        └── honk.wav    # Horn sound played by the remote honk feature
 ```
 
 ---
@@ -147,10 +153,70 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 
 ### Arduino / RC Hardware
 - Arduino Uno or Nano (or any AVR board with `Servo.h` support)
-- Standard RC steering servo on pin 10
-- ESC on pin 9 (standard 50 Hz PWM, 1000–2000 µs range)
-- Resistor divider on A0: 4.64 kΩ (high side) + 1.17 kΩ (low side) for battery voltage sensing
+- Standard RC steering servo on **pin 10**
+- ESC on **pin 9** (standard 50 Hz PWM, 1000–2000 µs range)
+- Resistor divider on **A0**: 4.64 kΩ (high side) + 1.17 kΩ (low side) for battery voltage sensing
 - USB cable from Arduino to Android phone (OTG adapter may be required)
+
+---
+
+## Hardware Wiring (Arduino)
+
+This section explains how to connect your servo and ESC to the Arduino if you haven't done it before.
+
+### What you need to know about servo connectors
+
+Both a standard RC servo and an ESC's control input use the same 3-wire connector:
+
+| Wire colour (typical) | Signal   | Description                                      |
+|-----------------------|----------|--------------------------------------------------|
+| Brown or Black        | GND      | Ground — must be shared with the Arduino         |
+| Red                   | V+ (5 V) | Power — **do not connect to Arduino 5 V pin**    |
+| Orange or White       | Signal   | PWM control signal from the Arduino              |
+
+> **Important:** The red (V+) wire on a servo or ESC receiver connection carries power from the ESC's BEC or from a separate servo power supply. Do **not** connect it to the Arduino's 5 V pin. Leaving the red wire unconnected on the ESC signal lead is safe and common practice; the Arduino gets its own power from USB.
+
+### Steering servo (pin 10)
+
+1. Plug the servo's 3-pin connector onto a row of three male header pins wired to the Arduino (or into a breadboard).
+2. Connect the **signal (orange/white) wire to Arduino digital pin 10**.
+3. Connect the **ground (brown/black) wire to any Arduino GND pin**.
+4. The red wire can be left unconnected if your servo is powered from the car's existing receiver power rail, or connected to a 5 V BEC if you're powering the servo separately.
+
+### ESC (pin 9)
+
+The ESC has two connectors: thick wires going to the motor and battery, and a thin 3-pin servo-style lead that carries the control signal. Connect only the thin control lead to the Arduino:
+
+1. Connect the **signal (orange/white) wire to Arduino digital pin 9**.
+2. Connect the **ground (brown/black) wire to any Arduino GND pin**. This ground bond between the Arduino and the ESC is important — without it, the signal has no return path and the ESC won't respond correctly.
+3. Leave the red wire on the ESC control lead unconnected (the Arduino is powered from USB, not from the ESC's BEC).
+
+### Battery voltage divider (pin A0)
+
+To monitor the car's main pack voltage, wire a simple resistor divider between the battery positive terminal and ground:
+
+```
+Battery+ ──┤ 4.64 kΩ ├──┬──┤ 1.17 kΩ ├── GND
+                         │
+                      Arduino A0
+```
+
+- The junction between the two resistors connects to **Arduino analog pin A0**.
+- The bottom resistor goes to **Arduino GND** (which must also be connected to the battery negative terminal so they share a common ground).
+- This scales a nominal 3S LiPo pack (≈12.6 V max) down to under 5 V, safe for the Arduino's ADC.
+- If you need a different voltage range, keep the ratio `(R_high + R_low) / R_low` correct and adjust `BAT_CALIBRATION` in the sketch if readings are slightly off.
+
+### Summary
+
+```
+Arduino pin 10  ──── Servo signal wire
+Arduino pin 9   ──── ESC control signal wire
+Arduino GND     ──── Servo GND  +  ESC control GND  +  battery negative  +  divider bottom
+Arduino A0      ──── Junction of 4.64 kΩ / 1.17 kΩ divider
+Arduino USB     ──── Android phone (via OTG adapter if needed)
+```
+
+The Arduino is powered entirely from the Android phone over USB — no separate 5 V supply is needed.
 
 ---
 
@@ -178,13 +244,16 @@ Open `firmware/firmware.ino` in the Arduino IDE (1.8+ or 2.x), select your board
 
 Adjust the constants at the top of the sketch to match your hardware:
 
-| Constant           | Default | Description                            |
-|--------------------|---------|----------------------------------------|
-| `STEER_CENTER_US`  | 1460    | Steering servo centre in microseconds  |
-| `ESC_FORWARD_LIMIT`| 0.25    | Max forward throttle fraction          |
-| `ESC_BRAKE_LIMIT`  | 0.55    | Max brake/reverse throttle fraction    |
-| `STEERING_EXPO`    | 0.80    | Steering expo (0 = linear, 1 = cubic)  |
-| `BAT_CALIBRATION`  | 0.994   | Voltage calibration multiplier         |
+| Constant            | Default | Description                            |
+|---------------------|---------|----------------------------------------|
+| `STEER_CENTER_US`   | 1500    | Steering servo centre in microseconds  |
+| `ESC_FORWARD_LIMIT` | 0.25    | Max forward throttle fraction          |
+| `ESC_BRAKE_LIMIT`   | 0.55    | Max brake/reverse throttle fraction    |
+| `STEERING_EXPO`     | 0.80    | Steering expo (0 = linear, 1 = cubic)  |
+| `THROTTLE_EXPO`     | 0.00    | Throttle expo (0 = linear, 1 = cubic); set to 0 to disable  |
+| `BAT_CALIBRATION`   | 0.994   | Voltage calibration multiplier         |
+
+`STEER_CENTER_US` is the most likely constant you'll need to adjust. If your car pulls left or right at neutral stick, change this value (increasing it steers left, decreasing it steers right) until the wheels point straight ahead.
 
 ### 3. Android App (build from source)
 
@@ -195,12 +264,13 @@ The Android app is not available as a pre-built APK. You must build it yourself 
 1. Install [Android Studio](https://developer.android.com/studio) (Hedgehog or newer recommended).
 2. Clone this repository and open the `android/` folder as an Android Studio project.
 3. Generate the relay server certificate first (run `node app.js` once), then copy `ssl/cert.cer` to `android/app/src/main/res/raw/cert.cer`.
-4. Connect your Android phone via USB, enable Developer Options and USB Debugging.
-5. Build and install: **Run ▶ → Run 'app'**, or from the terminal:
+4. Add your alarm and honk audio files as `android/app/src/main/res/raw/alarm.wav` and `honk.wav`.
+5. Connect your Android phone via USB, enable Developer Options and USB Debugging.
+6. Build and install: **Run ▶ → Run 'app'**, or from the terminal:
    ```bash
    ./gradlew installDebug
    ```
-6. On first launch, enter your relay server's IP address or hostname when prompted.
+7. On first launch, enter your relay server's IP address or hostname when prompted.
 
 **Required permissions** (declared in `AndroidManifest.xml`, requested at runtime):
 - `CAMERA`
@@ -260,6 +330,8 @@ Open `https://<server-ip>:3000` in a browser (accept the self-signed certificate
 | `play_alarm`         | Server → Android       | *(no extra fields)*                         |
 | `stop_alarm`         | Server → Android       | *(no extra fields)*                         |
 | `alarm_state`        | Server → Viewers       | `active` (bool)                             |
+| `play_honk`          | Viewer → Server → Android | *(no extra fields)*                      |
+| `stop_honk`          | Viewer → Server → Android | *(no extra fields)*                      |
 | `ping`               | Viewer → Server → Android | `ts` (timestamp ms), `_vid` (viewer ID) |
 | `pong`               | Android → Server → Viewer | `ts` (echoed), `_vid` (echoed)          |
 | `publisher_status`   | Server → Viewers       | `connected` (bool)                          |
