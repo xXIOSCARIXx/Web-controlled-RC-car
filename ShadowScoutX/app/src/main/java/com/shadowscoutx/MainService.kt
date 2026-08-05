@@ -103,8 +103,8 @@ class MainService : LifecycleService() {
 
     private var videoEncoder: MediaCodec? = null
     private var inputSurface: Surface? = null
-    private var encoderWidth = 1440
-    private var encoderHeight = 1080
+    private var encoderWidth = 960
+    private var encoderHeight = 720
     private var configBuffer: ByteArray? = null
     private val videoEncoderLock = Any()
 
@@ -112,6 +112,8 @@ class MainService : LifecycleService() {
     private var audioThread: Thread? = null
     @Volatile
     private var isAudioRunning = false
+
+    private var mediaPlayer: MediaPlayer? = null
 
     private var wifiLevel = 0
     private var cellLevel = 0
@@ -390,6 +392,20 @@ class MainService : LifecycleService() {
                             activeCamera?.cameraControl?.enableTorch(torchEnabled)
                             return
                         }
+                        "ping" -> {
+                            val ts = json.optLong("ts", 0L)
+                            val vid = json.optString("_vid", "")
+                            webSocket.send("""{"type":"pong","ts":$ts,"_vid":"$vid"}""")
+                            return
+                        }
+                        "play_alarm" -> {
+                            Handler(Looper.getMainLooper()).post { playAlarm() }
+                            return
+                        }
+                        "stop_alarm" -> {
+                            Handler(Looper.getMainLooper()).post { stopAlarm() }
+                            return
+                        }
                     }
                     if ((json.optString("type") != "gamepad") || !json.optBoolean("connected")) return
                     val axes = json.optJSONArray("axes")
@@ -480,8 +496,8 @@ class MainService : LifecycleService() {
                 if (!isStreaming || lifecycle.currentState == Lifecycle.State.DESTROYED) return@addListener
                 cameraProvider = try { providerFuture.get() } catch (_: Exception) { return@addListener }
 
-                encoderWidth = 1440
-                encoderHeight = 1080
+                encoderWidth = 960
+                encoderHeight = 720
                 initVideoEncoder(encoderWidth, encoderHeight)
 
                 val surface = inputSurface
@@ -515,9 +531,9 @@ class MainService : LifecycleService() {
                             .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(10, 30))
+                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(24, 30))
                             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 2)
-                        
+
                         Camera2CameraControl.from(it.cameraControl).captureRequestOptions = builder.build()
                     }
                 } catch (e: Exception) { e.printStackTrace() }
@@ -532,7 +548,7 @@ class MainService : LifecycleService() {
             try {
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                format.setInteger(MediaFormat.KEY_BIT_RATE, 6_000_000)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
                 format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
@@ -541,14 +557,14 @@ class MainService : LifecycleService() {
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
 
                 format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-                format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+                format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
 
                 videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
                 videoEncoder?.setCallback(object : MediaCodec.Callback() {
                     override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
                     override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                         val ws = webSocket
-                        if ((ws == null) || (ws.queueSize() > 64_000)) {
+                        if ((ws == null) || (ws.queueSize() > 128_000)) {
                             codec.releaseOutputBuffer(index, false)
                             return
                         }
@@ -650,6 +666,26 @@ class MainService : LifecycleService() {
         } catch (_: Exception) {}
         audioRecord = null
         audioThread = null
+    }
+
+    private fun playAlarm() {
+        stopAlarm()
+        try {
+            mediaPlayer = MediaPlayer.create(this, R.raw.alarm).apply {
+                isLooping = true
+                start()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun stopAlarm() {
+        try {
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+        } catch (_: Exception) {}
+        mediaPlayer = null
     }
 
     private fun connectUsb() {
@@ -776,6 +812,7 @@ class MainService : LifecycleService() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
         cameraProvider?.unbindAll()
         stopVideoEncoder()
+        stopAlarm()
         webSocket?.close(1000, null)
         webSocket = null
         serial?.write(byteArrayOf(COMMAND_CENTER))
