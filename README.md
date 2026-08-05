@@ -102,6 +102,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - The publisher connection uses a self-signed certificate auto-generated with OpenSSL on first run; the `.cer` file must be installed as a raw resource in the Android app (`res/raw/cert.cer`). The Android app pins this certificate using a custom `TrustManager`.
 - The server caches the last message of each telemetry type (`battery`, `wifi`, `cell`, `car_battery`, `usb_status`, `gps`) and replays them immediately to any viewer that connects mid-session, so the HUD is fully populated on join.
 - Only one publisher is permitted at a time; a new connection closes the previous one.
+- The publisher connection is kept alive with a WebSocket-level ping/pong heartbeat every **5 seconds** (`PUBLISHER_PING_INTERVAL_MS`). If the publisher fails to respond to a ping before the next interval fires, the server calls `ws.terminate()` to forcibly close the dead connection and clean up state.
 - H.264 binary frames are forwarded only when the viewer's `bufferedAmount` is below 256 KB, and non-keyframe frames are dropped for lagging viewers, providing natural backpressure to prevent buffer bloat.
 - Viewer-initiated messages (`toggle_camera`, `toggle_torch`, `gamepad`) are forwarded upstream to the publisher only when the publisher's `bufferedAmount` is zero.
 - `play_honk` and `stop_honk` messages from any viewer are forwarded directly to the publisher.
