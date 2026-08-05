@@ -57,11 +57,34 @@ const pubServer = https.createServer({ key: sslKey, cert: sslCert }, (_req, res)
 
 const pubWss = new WebSocket.Server({ server: pubServer, perMessageDeflate: false });
 
+const PUBLISHER_PING_INTERVAL_MS = 5000;
+
+function startPublisherHeartbeat(ws) {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+
+    ws._heartbeatInterval = setInterval(() => {
+        if (!ws.isAlive) {
+            ws.terminate();
+            return;
+        }
+        ws.isAlive = false;
+        ws.ping();
+    }, PUBLISHER_PING_INTERVAL_MS);
+}
+
+function stopPublisherHeartbeat(ws) {
+    clearInterval(ws._heartbeatInterval);
+}
+
 pubWss.on('connection', (ws, _req) => {
     if (publisher && publisher.readyState === WebSocket.OPEN) {
+        stopPublisherHeartbeat(publisher);
         publisher.close(1000, 'replaced');
     }
     publisher = ws;
+    console.log('Publisher connected from', _req.socket.remoteAddress?.replace('::ffff:', ''));
+    startPublisherHeartbeat(ws);
     notifyPublisherViewerCount();
     const connMsg = JSON.stringify({ type: 'publisher_status', connected: true });
     for (const viewer of viewers) {
@@ -159,8 +182,10 @@ pubWss.on('connection', (ws, _req) => {
 
     ws.on('close', () => {
         if (publisher === ws) {
+            stopPublisherHeartbeat(ws);
             publisher = null;
             alarmActive = false;
+            console.log('Publisher disconnected');
             const msg = JSON.stringify({ type: 'publisher_disconnected' });
             for (const viewer of viewers) {
                 if (viewer.readyState === WebSocket.OPEN) viewer.send(msg);

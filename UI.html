@@ -255,7 +255,7 @@
         .stat-pill.dim  { color: #555; }
         #audio-btn {
             position: fixed;
-            top: 46px;
+            top: 44px;
             left: 50%;
             transform: translateX(-50%);
             padding: 4px 12px;
@@ -268,6 +268,7 @@
             pointer-events: all;
         }
         #audio-btn.on { color: #6cf; border-color: #6cf; }
+        #audio-btn.alarm-disabled { color: #f44; border-color: #f44; opacity: 0.7; cursor: not-allowed; }
         @keyframes pulse-warning {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
@@ -275,7 +276,7 @@
         #cell-warning {
             display: none;
             position: fixed;
-            top: 52px;
+            top: 82px;
             left: 50%;
             transform: translateX(-50%);
             padding: 6px 16px;
@@ -606,9 +607,11 @@
     let audioCtx = null;
     let audioEnabled = false;
     let nextPlayTime = 0;
+    let audioWasEnabledBeforeAlarm = false;
     const audioBtn = document.getElementById('audio-btn');
 
     audioBtn.addEventListener('click', () => {
+        if (alarmActive) return;
         audioEnabled = !audioEnabled;
         if (audioEnabled) {
             audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -838,8 +841,33 @@
                 updateCell(msg.level);
             }
             if (msg.type === 'alarm_state') {
+                const wasActive = alarmActive;
                 alarmActive = msg.active;
                 document.getElementById('alarm-overlay').classList.toggle('visible', msg.active);
+                if (msg.active && !wasActive) {
+                    audioWasEnabledBeforeAlarm = audioEnabled;
+                    if (audioEnabled) {
+                        audioEnabled = false;
+                        audioCtx.close();
+                        audioCtx = null;
+                    }
+                    audioBtn.textContent = '🔇 Sound disabled';
+                    audioBtn.className = 'alarm-disabled';
+                } else if (!msg.active && wasActive) {
+                    if (audioWasEnabledBeforeAlarm && !audioEnabled) {
+                        setTimeout(() => {
+                            audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+                            nextPlayTime = audioCtx.currentTime;
+                            audioEnabled = true;
+                            audioBtn.textContent = '🔊 Audio on';
+                            audioBtn.className = 'on';
+                        }, 500);
+                    } else {
+                        audioBtn.textContent = '🔇 Audio off';
+                        audioBtn.className = '';
+                    }
+                    audioWasEnabledBeforeAlarm = false;
+                }
                 return;
             }
             if (msg.type === 'gps') {
