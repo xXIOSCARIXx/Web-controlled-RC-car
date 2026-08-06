@@ -130,6 +130,20 @@ pubWss.on('connection', (ws, _req) => {
                     }
                     return;
                 }
+                if (msg.type === 'torch_status') {
+                    const fwd = data.toString();
+                    for (const viewer of viewers) {
+                        if (viewer.readyState === WebSocket.OPEN) viewer.send(fwd);
+                    }
+                    return;
+                }
+                if (msg.type === 'data_usage') {
+                    const fwd = data.toString();
+                    for (const viewer of viewers) {
+                        if (viewer.readyState === WebSocket.OPEN) viewer.send(fwd);
+                    }
+                    return;
+                }
                 if (msg.type === 'gps') {
                     lastGpsMsg = data.toString();
                     for (const viewer of viewers) {
@@ -230,10 +244,10 @@ viewWss.on('connection', (ws, req) => {
         }
     }
 
-    notifyPublisherViewerCount();
     if (publisher && publisher.readyState === WebSocket.OPEN) {
         publisher.send(JSON.stringify({ type: 'viewer_connected' }));
     }
+    notifyPublisherViewerCount();
 
     ws.on('message', (data, isBinary) => {
         if (isBinary) return;

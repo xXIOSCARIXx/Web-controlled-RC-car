@@ -253,11 +253,16 @@
         .stat-pill.warn { color: #fa4; }
         .stat-pill.crit { color: #f44; }
         .stat-pill.dim  { color: #555; }
-        #audio-btn {
+        #media-controls {
             position: fixed;
             top: 44px;
             left: 50%;
             transform: translateX(-50%);
+            display: flex;
+            gap: 6px;
+            pointer-events: all;
+        }
+        #audio-btn, #torch-btn {
             padding: 4px 12px;
             border-radius: 6px;
             border: 1px solid #444;
@@ -266,9 +271,12 @@
             font: 11px/1.6 monospace;
             cursor: pointer;
             pointer-events: all;
+            white-space: nowrap;
         }
         #audio-btn.on { color: #6cf; border-color: #6cf; }
         #audio-btn.alarm-disabled { color: #f44; border-color: #f44; opacity: 0.7; cursor: not-allowed; }
+        #torch-btn.on { color: #ff0; border-color: #ff0; }
+
         @keyframes pulse-warning {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
@@ -447,10 +455,14 @@
         <small>Press X to silence</small>
     </div>
 </div>
-<button id="audio-btn">🔇 Audio off</button>
+<div id="media-controls">
+    <button id="audio-btn">🔊 Audio</button>
+    <button id="torch-btn">🔦 Light</button>
+</div>
 <div id="stats-overlay">
     <div class="stat-pill dim" id="stat-fps">-- FPS</div>
     <div class="stat-pill dim" id="stat-lat">-- ms</div>
+    <div class="stat-pill dim" id="stat-data">↓-- ↑--</div>
     <div class="stat-pill dim" id="stat-viewers">0 👁</div>
 </div>
 <script>
@@ -472,6 +484,7 @@
     let lastFrame = null;
     const statFps     = document.getElementById('stat-fps');
     const statLat     = document.getElementById('stat-lat');
+    const statData    = document.getElementById('stat-data');
     const statViewers = document.getElementById('stat-viewers');
 
     let fpsFrameCount = 0;
@@ -609,6 +622,15 @@
     let nextPlayTime = 0;
     let audioWasEnabledBeforeAlarm = false;
     const audioBtn = document.getElementById('audio-btn');
+    const torchBtn = document.getElementById('torch-btn');
+    let torchOn = false;
+
+    function toggleTorch() {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'toggle_torch' }));
+    }
+
+    torchBtn.addEventListener('click', toggleTorch);
 
     audioBtn.addEventListener('click', () => {
         if (alarmActive) return;
@@ -616,12 +638,10 @@
         if (audioEnabled) {
             audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
             nextPlayTime = audioCtx.currentTime;
-            audioBtn.textContent = '🔊 Audio on';
             audioBtn.className = 'on';
         } else {
             audioCtx.close();
             audioCtx = null;
-            audioBtn.textContent = '🔇 Audio off';
             audioBtn.className = '';
         }
     });
@@ -797,6 +817,11 @@
                 showConnLost();
                 return;
             }
+            if (msg.type === 'torch_status') {
+                torchOn = msg.enabled;
+                torchBtn.className = torchOn ? 'on' : '';
+                return;
+            }
             if (msg.type === 'publisher_status') {
                 if (msg.connected) hideConnLost();
                 else {
@@ -813,6 +838,12 @@
                     statLat.textContent = latencyMs + ' ms';
                     statLat.className = 'stat-pill' + (latencyMs > 500 ? ' crit' : latencyMs > 200 ? ' warn' : '');
                 }
+                return;
+            }
+            if (msg.type === 'data_usage') {
+                const toMb = b => (b / 1048576).toFixed(2) + 'MB';
+                statData.textContent = `↓${toMb(msg.data_rx)} ↑${toMb(msg.data_tx)}`;
+                statData.className = 'stat-pill';
                 return;
             }
             if (msg.type === 'viewer_count') {
@@ -851,7 +882,6 @@
                         audioCtx.close();
                         audioCtx = null;
                     }
-                    audioBtn.textContent = '🔇 Sound disabled';
                     audioBtn.className = 'alarm-disabled';
                 } else if (!msg.active && wasActive) {
                     if (audioWasEnabledBeforeAlarm && !audioEnabled) {
@@ -859,11 +889,9 @@
                             audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
                             nextPlayTime = audioCtx.currentTime;
                             audioEnabled = true;
-                            audioBtn.textContent = '🔊 Audio on';
                             audioBtn.className = 'on';
                         }, 500);
                     } else {
-                        audioBtn.textContent = '🔇 Audio off';
                         audioBtn.className = '';
                     }
                     audioWasEnabledBeforeAlarm = false;
@@ -949,7 +977,7 @@
 
         const aPressed = !!(pad.buttons[0]?.pressed);
         if (aPressed && !aPrev && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'toggle_torch' }));
+            toggleTorch();
         }
         aPrev = aPressed;
 
@@ -984,7 +1012,7 @@
             statusEl.className = 'on';
             statusEl.textContent = 'Gamepad: ' + pad.id;
         }
-        const rawPct   = rawSteer * 50;
+        const rawPct   = clamp(rawSteer * 50, -50 - steerTrim * 50, 50 - steerTrim * 50);
         const trimPct  = steerTrim * 50;
         fillSteer.style.left  = rawSteer < 0 ? (50 + rawPct) + '%' : '50%';
         fillSteer.style.width = Math.abs(rawPct) + '%';
