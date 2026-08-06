@@ -17,17 +17,17 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ## Features
 
 ### Live Video Streaming
-- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 5 Mbps VBR, 30 fps, Baseline profile Level 3.1).
-- The encoder is configured with `KEY_I_FRAME_INTERVAL = 0` so every frame is eligible to be a keyframe; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR.
+- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 2 Mbps VBR, 30 fps, Baseline profile Level 3.1).
+- The encoder is configured with `KEY_I_FRAME_INTERVAL = 2`; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR.
 - Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
 - The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
-- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`) with both optical and video stabilization disabled to minimise encoder complexity and latency. Exposure compensation is set to +2 EV.
+- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`). When using the rear camera, both optical stabilization (`LENS_OPTICAL_STABILIZATION_MODE_ON`) and video stabilization (`CONTROL_VIDEO_STABILIZATION_MODE_ON`) are enabled; stabilization is skipped for the front camera. Exposure compensation is set to +1 EV.
 - Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI.
 - Camera capture and audio recording only start when at least one viewer is connected; they stop automatically when all viewers disconnect, saving power and resources.
 
 
 ### Live Audio Streaming
-- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono, `VOICE_COMMUNICATION` source) and streamed as binary frames interleaved with video.
+- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono, `MIC` source) and streamed as binary frames interleaved with video.
 - Binary frames are distinguished by a type byte: `0x01` = audio (raw PCM), `0x02` = H.264 video.
 - The viewer page includes an unmute button since browsers require a user gesture before playing audio.
 
@@ -53,6 +53,11 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - The viewer displays a live satellite map (Leaflet.js + Esri World Imagery tiles) in the bottom-right corner with a position marker and an accuracy radius circle.
 - Clicking the mini-map expands it to a full-screen interactive map (press Escape or the close button to return).
 - Coordinates are displayed in decimal degrees with ±accuracy in metres.
+
+### Data Usage Telemetry
+- Mobile data and Wi-Fi bytes transferred by the app are tracked using `TrafficStats.getUidRxBytes` / `getUidTxBytes`, accumulating totals since the service started.
+- Only traffic on active cellular or Wi-Fi interfaces is counted; loopback and offline intervals are skipped.
+- Usage totals are sent to the server every **5 seconds** alongside the signal poll as `{"type":"data_usage","data_rx":...,"data_tx":...}` (bytes since session start) and forwarded to all viewers.
 
 ### Android Phone Telemetry (HUD)
 - **Phone battery**: Level streamed as JSON and shown as a colour-coded battery icon (green → amber → red as it depletes).
@@ -329,6 +334,8 @@ Open `https://<server-ip>:3000` in a browser (accept the self-signed certificate
 | `car_battery`        | Android → Viewers      | `mv` (integer millivolts)                   |
 | `usb_status`         | Android → Viewers      | `status` (string)                           |
 | `gps`                | Android → Viewers      | `lat`, `lng`, `acc` (float)                 |
+| `torch_status`       | Android → Viewers      | `enabled` (bool); sent on connection open and on every toggle |
+| `data_usage`         | Android → Viewers      | `data_rx`, `data_tx` (bytes since session start) |
 | `gamepad`            | Viewer → Android       | `connected`, `axes`, `buttons`, `pressed`   |
 | `toggle_torch`       | Viewer → Android       | *(no extra fields)*                         |
 | `toggle_camera`      | Viewer → Android       | *(no extra fields)*                         |
