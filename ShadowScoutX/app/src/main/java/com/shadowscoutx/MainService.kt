@@ -19,6 +19,7 @@ import android.location.Location
 import android.net.wifi.WifiManager
 import android.os.*
 import android.net.ConnectivityManager
+import android.net.TrafficStats
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
 import android.telephony.TelephonyCallback
@@ -82,6 +83,10 @@ class MainService : LifecycleService() {
     @Volatile
     private var wasWsConnected = false
     private val appStartTime = SystemClock.uptimeMillis()
+    private var lastUidRx = 0L
+    private var lastUidTx = 0L
+    private var dataRxSinceStart = 0L
+    private var dataTxSinceStart = 0L
     private val statusDelayHandler = Handler(Looper.getMainLooper())
     private var onStatusChanged: (() -> Unit)? = null
 
@@ -123,8 +128,34 @@ class MainService : LifecycleService() {
     private val signalRunnable = object : Runnable {
         override fun run() {
             updateSignalInfo()
+            updateDataUsage()
             signalHandler.postDelayed(this, 5000)
         }
+    }
+
+    private fun updateDataUsage() {
+        val currentRx = TrafficStats.getUidRxBytes(Process.myUid())
+        val currentTx = TrafficStats.getUidTxBytes(Process.myUid())
+        
+        if (currentRx != TrafficStats.UNSUPPORTED.toLong() && currentTx != TrafficStats.UNSUPPORTED.toLong()) {
+            if (lastUidRx > 0 || lastUidTx > 0) {
+                val deltaRx = if (currentRx >= lastUidRx) currentRx - lastUidRx else 0L
+                val deltaTx = if (currentTx >= lastUidTx) currentTx - lastUidTx else 0L
+                
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                val network = cm.activeNetwork
+                val caps = cm.getNetworkCapabilities(network)
+                if (caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) || 
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))) {
+                    dataRxSinceStart += deltaRx
+                    dataTxSinceStart += deltaTx
+                }
+            }
+            lastUidRx = currentRx
+            lastUidTx = currentTx
+        }
+        
+        webSocket?.send("""{"type":"data_usage","data_rx":$dataRxSinceStart,"data_tx":$dataTxSinceStart}""")
     }
 
     private fun updateSignalInfo() {
@@ -132,7 +163,7 @@ class MainService : LifecycleService() {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = cm.activeNetwork
         val caps = cm.getNetworkCapabilities(network)
-        if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        if ((caps != null) && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
             val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 caps.transportInfo as? WifiInfo
             } else {
@@ -255,6 +286,11 @@ class MainService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        lastUidRx = TrafficStats.getUidRxBytes(Process.myUid())
+        lastUidTx = TrafficStats.getUidTxBytes(Process.myUid())
+        if (lastUidRx == TrafficStats.UNSUPPORTED.toLong()) lastUidRx = 0
+        if (lastUidTx == TrafficStats.UNSUPPORTED.toLong()) lastUidTx = 0
+
         createNotificationChannel()
         val initialStatus = "$wsStatus | CAM: Standby"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -392,6 +428,7 @@ class MainService : LifecycleService() {
                         }
                         updateSignalInfo()
                         webSocket.send("""{"type":"usb_status","status":"$usbStatus"}""")
+                        webSocket.send("""{"type":"torch_status","enabled":$torchEnabled}""")
                     }
                 }
 
@@ -406,10 +443,7 @@ class MainService : LifecycleService() {
                                     bindCamera()
                                     startAudio()
                                 } else if (!hasViewers && isStreaming) {
-                                    isStreaming = false
-                                    stopAudio()
-                                    cameraProvider?.unbindAll()
-                                    activeCamera = null
+                                    stopStreamingInternal()
                                 }
                                 onStatusChanged?.invoke()
                                 updateNotification()
@@ -418,12 +452,26 @@ class MainService : LifecycleService() {
                         }
                         "toggle_camera" -> {
                             useFrontCamera = !useFrontCamera
-                            Handler(Looper.getMainLooper()).post { bindCamera() }
+                            torchEnabled = false
+                            webSocket.send("""{"type":"torch_status","enabled":false}""")
+                            Handler(Looper.getMainLooper()).post {
+                                if (isStreaming) {
+                                    stopVideoEncoder()
+                                    cameraProvider?.unbindAll()
+                                    bindCamera()
+                                }
+                            }
                             return
                         }
                         "toggle_torch" -> {
-                            torchEnabled = !torchEnabled
-                            activeCamera?.cameraControl?.enableTorch(torchEnabled)
+                            if (!useFrontCamera) {
+                                torchEnabled = !torchEnabled
+                                activeCamera?.cameraControl?.enableTorch(torchEnabled)
+                                webSocket.send("""{"type":"torch_status","enabled":$torchEnabled}""")
+                            } else {
+                                torchEnabled = false
+                                webSocket.send("""{"type":"torch_status","enabled":false}""")
+                            }
                             return
                         }
                         "ping" -> {
@@ -507,6 +555,8 @@ class MainService : LifecycleService() {
     private fun stopStreamingInternal() {
         if (isStreaming) {
             isStreaming = false
+            torchEnabled = false
+            webSocket?.send("""{"type":"torch_status","enabled":false}""")
             stopAudio()
             stopVideoEncoder()
             configBuffer = null
@@ -561,18 +611,22 @@ class MainService : LifecycleService() {
                 try {
                     cameraProvider?.unbindAll()
                     activeCamera = cameraProvider?.bindToLifecycle(this, selector, preview)
-                    activeCamera?.let {
-                        val focusDistance = 0.0f
+                    activeCamera?.let { camera ->
                         val builder = CaptureRequestOptions.Builder()
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                            .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
-                            .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(24, 30))
-                            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 2)
+                        
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                        builder.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
+                        
+                        if (!useFrontCamera) {
+                            builder.setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+                            builder.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+                        }
 
-                        Camera2CameraControl.from(it.cameraControl).captureRequestOptions = builder.build()
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(24, 30))
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 1)
+
+                        Camera2CameraControl.from(camera.cameraControl).captureRequestOptions = builder.build()
                     }
                 } catch (_: Exception) { }
             },
@@ -586,9 +640,9 @@ class MainService : LifecycleService() {
             try {
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                format.setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
                 format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
 
                 format.setInteger(MediaFormat.KEY_LATENCY, 0)
@@ -598,8 +652,9 @@ class MainService : LifecycleService() {
                 format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
 
                 videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                videoEncoder?.setCallback(object : MediaCodec.Callback() {
-                    override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
+                videoEncoder?.setCallback(
+                    object : MediaCodec.Callback() {
+                        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
                     override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                         val ws = webSocket
                         if ((ws == null) || (ws.queueSize() > 128_000)) {
@@ -608,7 +663,7 @@ class MainService : LifecycleService() {
                         }
                         val buffer = codec.getOutputBuffer(index) ?: return
                         val data = ByteArray(info.size)
-                        buffer.get(data, 0, info.size)
+                        buffer.get(data)
 
                         if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                             configBuffer = data
@@ -632,7 +687,9 @@ class MainService : LifecycleService() {
                         }
                         codec.releaseOutputBuffer(index, false)
                     }
-                    override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { }
+                    override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                        Handler(Looper.getMainLooper()).post { stopStreamingInternal() }
+                    }
                     override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
                 })
                 videoEncoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -663,7 +720,7 @@ class MainService : LifecycleService() {
         val bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (bufferSize <= 0) return
 
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2)
+        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2)
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
 
         isAudioRunning = true
