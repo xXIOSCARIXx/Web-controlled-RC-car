@@ -456,8 +456,8 @@ class MainService : LifecycleService() {
                             webSocket.send("""{"type":"torch_status","enabled":false}""")
                             Handler(Looper.getMainLooper()).post {
                                 if (isStreaming) {
-                                    stopVideoEncoder()
                                     cameraProvider?.unbindAll()
+                                    stopVideoEncoder()
                                     bindCamera()
                                 }
                             }
@@ -557,10 +557,10 @@ class MainService : LifecycleService() {
             isStreaming = false
             torchEnabled = false
             webSocket?.send("""{"type":"torch_status","enabled":false}""")
+            cameraProvider?.unbindAll()
             stopAudio()
             stopVideoEncoder()
             configBuffer = null
-            cameraProvider?.unbindAll()
             activeCamera = null
             onStatusChanged?.invoke()
             updateNotification()
