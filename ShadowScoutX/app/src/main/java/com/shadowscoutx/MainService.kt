@@ -83,47 +83,26 @@ class MainService : LifecycleService() {
     @Volatile
     private var wasWsConnected = false
     private val appStartTime = SystemClock.uptimeMillis()
+    private val statusDelayHandler = Handler(Looper.getMainLooper())
+    private var onStatusChanged: (() -> Unit)? = null
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            if ((level != -1) && (scale != -1)) {
+                val pct = ((level * 100f) / scale).roundToInt()
+                webSocket?.send("""{"type":"battery","level":$pct}""")
+            }
+        }
+    }
+
+    private var wifiLevel = 0
+    private var cellLevel = 0
     private var lastUidRx = 0L
     private var lastUidTx = 0L
     private var dataRxSinceStart = 0L
     private var dataTxSinceStart = 0L
-    private val statusDelayHandler = Handler(Looper.getMainLooper())
-    private var onStatusChanged: (() -> Unit)? = null
-
-    @Volatile
-    private var webSocket: WebSocket? = null
-    private val client by lazy { buildTrustedClient() }
-    private var serverIp = ""
-    private val reconnectHandler = Handler(Looper.getMainLooper())
-    private val usbReconnectHandler = Handler(Looper.getMainLooper())
-
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var activeCamera: Camera? = null
-    private val cameraExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "CameraFrameThread").apply { priority = Thread.MAX_PRIORITY }
-    }
-    private var useFrontCamera = false
-    private var torchEnabled = false
-    @Volatile
-    private var isShuttingDown = false
-
-    private var videoEncoder: MediaCodec? = null
-    private var inputSurface: Surface? = null
-    private var encoderWidth = 960
-    private var encoderHeight = 720
-    private var configBuffer: ByteArray? = null
-    private val videoEncoderLock = Any()
-
-    private var audioRecord: AudioRecord? = null
-    private var audioThread: Thread? = null
-    @Volatile
-    private var isAudioRunning = false
-
-    private var mediaPlayer: MediaPlayer? = null
-    private var honkPlayer: MediaPlayer? = null
-
-    private var wifiLevel = 0
-    private var cellLevel = 0
     private val signalHandler = Handler(Looper.getMainLooper())
     private val signalRunnable = object : Runnable {
         override fun run() {
@@ -218,15 +197,12 @@ class MainService : LifecycleService() {
         webSocket?.send("""{"type":"cell","level":$cellLevel}""")
     }
 
-    private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private val locationCallback = object : LocationCallback() {
-        override fun onLocationResult(result: LocationResult) {
-            val loc: Location = result.lastLocation ?: return
-            val ws = webSocket ?: return
-            val payload = """{"type":"gps","lat":${loc.latitude},"lng":${loc.longitude},"acc":${loc.accuracy}}"""
-            ws.send(payload)
-        }
-    }
+    @Volatile
+    private var webSocket: WebSocket? = null
+    private val client by lazy { buildTrustedClient() }
+    private var serverIp = ""
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private val usbReconnectHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var serial: UsbCdcSerial? = null
@@ -241,17 +217,6 @@ class MainService : LifecycleService() {
     private var lastThrottleValue = -1
     private var lastDriveSentAt = 0L
     private val pendingDrive = AtomicReference<Triple<Float, Float, Float>?>()
-
-    private val batteryReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-            if ((level != -1) && (scale != -1)) {
-                val pct = ((level * 100f) / scale).roundToInt()
-                webSocket?.send("""{"type":"battery","level":$pct}""")
-            }
-        }
-    }
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -274,6 +239,45 @@ class MainService : LifecycleService() {
             }
         }
     }
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            val loc: Location = result.lastLocation ?: return
+            val ws = webSocket ?: return
+            val payload = """{"type":"gps","lat":${loc.latitude},"lng":${loc.longitude},"acc":${loc.accuracy}}"""
+            ws.send(payload)
+        }
+    }
+
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var activeCamera: Camera? = null
+    private val cameraExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "CameraFrameThread").apply { priority = Thread.MAX_PRIORITY }
+    }
+    private var useFrontCamera = false
+
+    private var audioEnabled = false
+    private var torchEnabled = false
+    private var isAlarmPlaying = false
+
+    @Volatile
+    private var isShuttingDown = false
+
+    private var videoEncoder: MediaCodec? = null
+    private var inputSurface: Surface? = null
+    private var encoderWidth = 960
+    private var encoderHeight = 720
+    private var configBuffer: ByteArray? = null
+    private val videoEncoderLock = Any()
+
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
+    @Volatile
+    private var isAudioRunning = false
+
+    private var mediaPlayer: MediaPlayer? = null
+    private var honkPlayer: MediaPlayer? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): MainService = this@MainService
@@ -418,17 +422,24 @@ class MainService : LifecycleService() {
                     statusDelayHandler.removeCallbacksAndMessages(null)
                     Handler(Looper.getMainLooper()).post {
                         updateWsStatus("WSS: Connected")
+                        
                         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
                         val batteryStatus = registerReceiver(null, filter)
-                        val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-                        val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-                        if ((level != -1) && (scale != -1)) {
-                            val pct = ((level * 100f) / scale).roundToInt()
+                        val bLevel = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                        val bScale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+                        if ((bLevel != -1) && (bScale != -1)) {
+                            val pct = ((bLevel * 100f) / bScale).roundToInt()
                             webSocket.send("""{"type":"battery","level":$pct}""")
                         }
+                        
                         updateSignalInfo()
+                        updateDataUsage()
+                        
                         webSocket.send("""{"type":"usb_status","status":"$usbStatus"}""")
+                        
+                        webSocket.send("""{"type":"audio_status","enabled":$audioEnabled}""")
                         webSocket.send("""{"type":"torch_status","enabled":$torchEnabled}""")
+                        webSocket.send("""{"type":"alarm_status","enabled":$isAlarmPlaying}""")
                     }
                 }
 
@@ -441,7 +452,7 @@ class MainService : LifecycleService() {
                                 if (hasViewers && !isStreaming) {
                                     isStreaming = true
                                     bindCamera()
-                                    startAudio()
+                                    if (audioEnabled) startAudio()
                                 } else if (!hasViewers && isStreaming) {
                                     stopStreamingInternal()
                                 }
@@ -459,6 +470,16 @@ class MainService : LifecycleService() {
                                     cameraProvider?.unbindAll()
                                     stopVideoEncoder()
                                     bindCamera()
+                                }
+                            }
+                            return
+                        }
+                        "toggle_audio" -> {
+                            audioEnabled = !audioEnabled
+                            webSocket.send("""{"type":"audio_status","enabled":$audioEnabled}""")
+                            Handler(Looper.getMainLooper()).post {
+                                if (isStreaming) {
+                                    if (audioEnabled) startAudio() else stopAudio()
                                 }
                             }
                             return
@@ -556,15 +577,17 @@ class MainService : LifecycleService() {
         if (isStreaming) {
             isStreaming = false
             torchEnabled = false
+            audioEnabled = false
             webSocket?.send("""{"type":"torch_status","enabled":false}""")
-            cameraProvider?.unbindAll()
-            stopAudio()
-            stopVideoEncoder()
-            configBuffer = null
-            activeCamera = null
-            onStatusChanged?.invoke()
-            updateNotification()
+            webSocket?.send("""{"type":"audio_status","enabled":false}""")
         }
+        stopAudio()
+        cameraProvider?.unbindAll()
+        stopVideoEncoder()
+        configBuffer = null
+        activeCamera = null
+        onStatusChanged?.invoke()
+        updateNotification()
     }
 
     private fun scheduleReconnect() {
@@ -769,6 +792,8 @@ class MainService : LifecycleService() {
                 isLooping = true
                 start()
             }
+            isAlarmPlaying = true
+            webSocket?.send("""{"type":"alarm_status","enabled":true}""")
         } catch (_: Exception) {
         }
     }
@@ -779,6 +804,8 @@ class MainService : LifecycleService() {
             mediaPlayer?.release()
         } catch (_: Exception) {}
         mediaPlayer = null
+        isAlarmPlaying = false
+        webSocket?.send("""{"type":"alarm_status","enabled":false}""")
     }
 
     private fun playHonk() {
@@ -927,6 +954,7 @@ class MainService : LifecycleService() {
         unregisterReceiver(batteryReceiver)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         cameraProvider?.unbindAll()
+        stopAudio()
         stopVideoEncoder()
         stopAlarm()
         stopHonk()
