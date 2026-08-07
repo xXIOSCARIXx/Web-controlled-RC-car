@@ -103,12 +103,13 @@ class MainService : LifecycleService() {
     private var lastUidTx = 0L
     private var dataRxSinceStart = 0L
     private var dataTxSinceStart = 0L
-    private val signalHandler = Handler(Looper.getMainLooper())
+    private var signalThread: HandlerThread? = null
+    private var signalHandler: Handler? = null
     private val signalRunnable = object : Runnable {
         override fun run() {
             updateSignalInfo()
             updateDataUsage()
-            signalHandler.postDelayed(this, 5000)
+            signalHandler?.postDelayed(this, 5000)
         }
     }
 
@@ -324,7 +325,9 @@ class MainService : LifecycleService() {
             @Suppress("DEPRECATION")
             tm.listen(phoneStateListener, android.telephony.PhoneStateListener.LISTEN_SIGNAL_STRENGTHS)
         }
-        signalHandler.post(signalRunnable)
+        signalThread = HandlerThread("SignalThread").apply { start() }
+        signalHandler = Handler(signalThread!!.looper)
+        signalHandler?.post(signalRunnable)
 
         val filter = IntentFilter(ACTION_USB_PERMISSION).apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -663,10 +666,10 @@ class MainService : LifecycleService() {
             try {
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                format.setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, 1_500_000)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
 
                 format.setInteger(MediaFormat.KEY_LATENCY, 0)
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
@@ -680,7 +683,7 @@ class MainService : LifecycleService() {
                         override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
                     override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                         val ws = webSocket
-                        if ((ws == null) || (ws.queueSize() > 128_000)) {
+                        if ((ws == null) || (ws.queueSize() > 32_000)) {
                             codec.releaseOutputBuffer(index, false)
                             return
                         }
@@ -749,7 +752,7 @@ class MainService : LifecycleService() {
         isAudioRunning = true
         audioThread = Thread(
             {
-                val audioBuffer = ByteArray(4096)
+                val audioBuffer = ByteArray(1024)
                 val sendBuffer = ByteArray(audioBuffer.size + 1)
                 sendBuffer[0] = 0x01
 
@@ -943,7 +946,8 @@ class MainService : LifecycleService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
         wakeLock?.release()
-        signalHandler.removeCallbacks(signalRunnable)
+        signalHandler?.removeCallbacks(signalRunnable)
+        signalThread?.quitSafely()
         val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             telephonyCallback?.let { tm.unregisterTelephonyCallback(it) }
