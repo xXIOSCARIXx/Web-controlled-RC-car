@@ -2,7 +2,7 @@
 
 A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live H.264 video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
 
-As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited range. On Wi-Fi the phone connects to the relay server on the local network directly; on mobile data the relay server needs to be reachable from the internet (port-forward port 47291 on your router).
+As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited range. On Wi-Fi the phone connects to the relay server on the local network directly; on mobile data the relay server needs to be reachable from the internet (port-forward port 47291 on your router). If the server address entered in the app already contains a colon (e.g. `192.168.1.10:47291` or a hostname with a custom port), it is used verbatim; otherwise `:47291` is appended automatically.
 
 ```
 [Browser + Gamepad] ◄──WSS (LAN)──► [Node.js Relay Server] ◄──WSS──► [Android App]
@@ -18,18 +18,18 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 
 ### Live Video Streaming
 - Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 2 Mbps VBR, 30 fps, Baseline profile Level 3.1).
-- The encoder is configured with `KEY_I_FRAME_INTERVAL = 2`; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR.
+- The encoder is configured with `KEY_I_FRAME_INTERVAL = 2`, `KEY_LATENCY = 0`, and `KEY_PRIORITY = 0` for low-latency output; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR. Encoder output frames are dropped if the WebSocket send queue exceeds 128 KB, preventing buffer bloat under poor network conditions.
 - Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
 - The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
-- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`). When using the rear camera, both optical stabilization (`LENS_OPTICAL_STABILIZATION_MODE_ON`) and video stabilization (`CONTROL_VIDEO_STABILIZATION_MODE_ON`) are enabled; stabilization is skipped for the front camera. Exposure compensation is set to +1 EV.
-- Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI.
+- Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`). When using the rear camera, both optical stabilization (`LENS_OPTICAL_STABILIZATION_MODE_ON`) and video stabilization (`CONTROL_VIDEO_STABILIZATION_MODE_ON`) are enabled; stabilization is skipped for the front camera. Auto-exposure is held at `CONTROL_AE_MODE_ON` with a target FPS range of 24–30, and exposure compensation is set to +1 EV.
+- Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI. When the camera is switched, the torch is automatically disabled (torch is only available on the rear camera).
 - Camera capture and audio recording only start when at least one viewer is connected; they stop automatically when all viewers disconnect, saving power and resources.
 
 
 ### Live Audio Streaming
-- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono, `MIC` source) and streamed as binary frames interleaved with video.
+- Microphone audio is captured using `AudioRecord` (16 kHz, 16-bit mono, `MIC` source) and streamed as binary frames interleaved with video. Audio frames are dropped if the WebSocket send queue exceeds 50 KB.
 - Binary frames are distinguished by a type byte: `0x01` = audio (raw PCM), `0x02` = H.264 video.
-- The viewer page includes an unmute button since browsers require a user gesture before playing audio.
+- The viewer's audio button toggles mic capture on the Android side (`toggle_audio` message) and requires a user click because browsers block autoplay; the button reflects the current `audio_status` broadcast by the phone.
 
 ### Torch / Flashlight Control
 - The rear camera torch can be toggled remotely from the browser dashboard by pressing the **A button** on the gamepad, or via a button in the viewer UI.
@@ -105,7 +105,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ### Relay Server (Node.js)
 - Two separate HTTPS/WSS servers on different ports: one for the Android publisher (`47291`) and one for browser viewers (`3000`). Both use the same self-signed TLS certificate.
 - The publisher connection uses a self-signed certificate auto-generated with OpenSSL on first run; the `.cer` file must be installed as a raw resource in the Android app (`res/raw/cert.cer`). The Android app pins this certificate using a custom `TrustManager`.
-- The server caches the last message of each telemetry type (`battery`, `wifi`, `cell`, `car_battery`, `usb_status`, `gps`) and replays them immediately to any viewer that connects mid-session, so the HUD is fully populated on join.
+- The server caches the last message of each telemetry type (`battery`, `wifi`, `cell`, `car_battery`, `usb_status`, `gps`, `audio_status`, `torch_status`, `alarm_status`) and replays them immediately to any viewer that connects mid-session, so the HUD is fully populated on join.
 - Only one publisher is permitted at a time; a new connection closes the previous one.
 - The publisher connection is kept alive with a WebSocket-level ping/pong heartbeat every **5 seconds** (`PUBLISHER_PING_INTERVAL_MS`). If the publisher fails to respond to a ping before the next interval fires, the server calls `ws.terminate()` to forcibly close the dead connection and clean up state.
 - H.264 binary frames are forwarded only when the viewer's `bufferedAmount` is below 256 KB, and non-keyframe frames are dropped for lagging viewers, providing natural backpressure to prevent buffer bloat.
@@ -342,7 +342,7 @@ Open `https://<server-ip>:3000` in a browser (accept the self-signed certificate
 | `toggle_alarm`       | Viewer → Server        | *(no extra fields)*; server toggles alarm state and sends `play_alarm`/`stop_alarm` to Android |
 | `play_alarm`         | Server → Android       | *(no extra fields)*                         |
 | `stop_alarm`         | Server → Android       | *(no extra fields)*                         |
-| `alarm_state`        | Server → Viewers       | `active` (bool)                             |
+| `alarm_status`       | Android → Viewers      | `enabled` (bool)                            |
 | `play_honk`          | Viewer → Server → Android | *(no extra fields)*                      |
 | `stop_honk`          | Viewer → Server → Android | *(no extra fields)*                      |
 | `ping`               | Viewer → Server → Android | `ts` (timestamp ms), `_vid` (viewer ID) |
