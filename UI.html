@@ -467,7 +467,38 @@
 </div>
 <script>
     const canvas = document.getElementById('stream');
-    const ctx = canvas.getContext('2d');
+    const ctx    = canvas.getContext('2d');
+
+    const statFps     = document.getElementById('stat-fps');
+    const statLat     = document.getElementById('stat-lat');
+    const statData    = document.getElementById('stat-data');
+    const statViewers = document.getElementById('stat-viewers');
+
+    const batteryFill       = document.getElementById('battery-fill');
+    const batteryLabel      = document.getElementById('battery-label');
+    const carBatteryVoltage = document.getElementById('car-battery-voltage');
+    const carBatteryUsb     = document.getElementById('car-battery-usb');
+    const cellWarning       = document.getElementById('cell-warning');
+    const connLost          = document.getElementById('conn-lost');
+    const connLostTitle     = document.getElementById('conn-lost-title');
+    const connLostSub       = document.getElementById('conn-lost-sub');
+
+    const audioBtn = document.getElementById('audio-btn');
+    const torchBtn = document.getElementById('torch-btn');
+
+    const statusEl  = document.getElementById('gp-status');
+    const fillSteer = document.getElementById('fill-steer');
+    const fillTrim  = document.getElementById('fill-trim');
+    const fillThrot = document.getElementById('fill-throttle');
+    const valSteer  = document.getElementById('val-steer');
+    const valThrot  = document.getElementById('val-throttle');
+
+    const mapWidget   = document.getElementById('map-widget');
+    const mapCoords   = document.getElementById('map-coords');
+    const mapFsEl     = document.getElementById('map-fullscreen');
+    const mapFsCoords = document.getElementById('map-fs-coords');
+    const mapFsClose  = document.getElementById('map-fs-close');
+
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
     window.addEventListener('resize', () => {
@@ -479,27 +510,23 @@
         document.fullscreenElement ? document.exitFullscreen() : document.body.requestFullscreen();
     });
 
-    let videoDecoder = null;
+    let videoDecoder        = null;
     let decoderSeenKeyframe = false;
-    let lastFrame = null;
-    const statFps     = document.getElementById('stat-fps');
-    const statLat     = document.getElementById('stat-lat');
-    const statData    = document.getElementById('stat-data');
-    const statViewers = document.getElementById('stat-viewers');
+    let lastFrame           = null;
 
     let fpsFrameCount = 0;
     let fpsLastTime   = performance.now();
     let currentFps    = 0;
 
     setInterval(() => {
-        const now = performance.now();
+        const now     = performance.now();
         const elapsed = (now - fpsLastTime) / 1000;
-        currentFps = elapsed > 0 ? Math.round(fpsFrameCount / elapsed) : 0;
+        currentFps    = elapsed > 0 ? Math.round(fpsFrameCount / elapsed) : 0;
         fpsFrameCount = 0;
         fpsLastTime   = now;
 
         statFps.textContent = currentFps + ' FPS';
-        const fpsBad = currentFps < 15;
+        const fpsBad  = currentFps < 15;
         const fpsWarn = currentFps < 24;
         statFps.className = 'stat-pill' + (currentFps === 0 ? ' dim' : fpsBad ? ' crit' : fpsWarn ? ' warn' : '');
     }, 1000);
@@ -554,9 +581,8 @@
     }
 
     function handleVideoChunk(arrayBuffer) {
-        const data = new Uint8Array(arrayBuffer, 1);
+        const data  = new Uint8Array(arrayBuffer, 1);
         const types = findNalTypes(data);
-
 
         const hasSlice = types.has(1) || types.has(5);
         const hasIDR   = types.has(5);
@@ -586,70 +612,15 @@
         }
     }
 
-    const batteryFill       = document.getElementById('battery-fill');
-    const batteryLabel      = document.getElementById('battery-label');
-    const carBatteryVoltage = document.getElementById('car-battery-voltage');
-    const carBatteryUsb     = document.getElementById('car-battery-usb');
-
-    function updateCarBattery(mv) {
-        const v = mv / 1000;
-        carBatteryVoltage.textContent = v.toFixed(2) + 'V';
-        carBatteryVoltage.className = v < 9.6 ? 'crit' : v < 10.5 ? 'warn' : '';
-    }
-
-    function updateWifi(level) {
-        const active = level < 2 ? '#f44' : '#6cf';
-        document.getElementById('wifi-dot').setAttribute('fill',   level >= 1 ? active : '#333');
-        document.getElementById('wifi-a1').setAttribute('stroke',  level >= 2 ? active : '#333');
-        document.getElementById('wifi-a2').setAttribute('stroke',  level >= 3 ? active : '#333');
-        document.getElementById('wifi-a3').setAttribute('stroke',  level >= 4 ? active : '#333');
-    }
-
-    const cellWarning = document.getElementById('cell-warning');
-
-    function updateCell(level) {
-        const active = level >= 3 ? '#6cf' : level === 2 ? '#fa0' : '#f44';
-        for (let i = 1; i <= 4; i++) {
-            document.getElementById(`cell-b${i}`).style.background =
-                i <= level ? active : '#333';
-        }
-        cellWarning.classList.toggle('visible', level <= 2);
-    }
-
     const SAMPLE_RATE = 16000;
-    let audioCtx = null;
+    let audioCtx     = null;
     let audioEnabled = false;
     let nextPlayTime = 0;
-    let audioWasEnabledBeforeAlarm = false;
-    const audioBtn = document.getElementById('audio-btn');
-    const torchBtn = document.getElementById('torch-btn');
-    let torchOn = false;
-
-    function toggleTorch() {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: 'toggle_torch' }));
-    }
-
-    torchBtn.addEventListener('click', toggleTorch);
-
-    audioBtn.addEventListener('click', () => {
-        if (alarmActive) return;
-        audioEnabled = !audioEnabled;
-        if (audioEnabled) {
-            audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-            nextPlayTime = audioCtx.currentTime;
-            audioBtn.className = 'on';
-        } else {
-            audioCtx.close();
-            audioCtx = null;
-            audioBtn.className = '';
-        }
-    });
 
     function handleAudioChunk(arrayBuffer) {
         if (!audioEnabled || !audioCtx) return;
-        const pcm = arrayBuffer.slice(1);
-        const int16 = new Int16Array(pcm);
+        const pcm    = arrayBuffer.slice(1);
+        const int16  = new Int16Array(pcm);
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
         const buf = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
@@ -663,10 +634,53 @@
         nextPlayTime += buf.duration;
     }
 
+    let alarmActive                = false;
+    let audioWasEnabledBeforeAlarm = false;
+
+    function updateCarBattery(mv) {
+        const v = mv / 1000;
+        carBatteryVoltage.textContent = v.toFixed(2) + 'V';
+        carBatteryVoltage.className   = v < 9.6 ? 'crit' : v < 10.5 ? 'warn' : '';
+    }
+
+    function updateWifi(level) {
+        const active = level < 2 ? '#f44' : '#6cf';
+        document.getElementById('wifi-dot').setAttribute('fill',   level >= 1 ? active : '#333');
+        document.getElementById('wifi-a1').setAttribute('stroke',  level >= 2 ? active : '#333');
+        document.getElementById('wifi-a2').setAttribute('stroke',  level >= 3 ? active : '#333');
+        document.getElementById('wifi-a3').setAttribute('stroke',  level >= 4 ? active : '#333');
+    }
+
+    function updateCell(level) {
+        const active = level >= 3 ? '#6cf' : level === 2 ? '#fa0' : '#f44';
+        for (let i = 1; i <= 4; i++) {
+            document.getElementById(`cell-b${i}`).style.background =
+                i <= level ? active : '#333';
+        }
+        cellWarning.classList.toggle('visible', level <= 2);
+    }
+
+    let torchOn = false;
+
+    function toggleTorch() {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'toggle_torch' }));
+    }
+
+    torchBtn.addEventListener('click', toggleTorch);
+
+    audioBtn.addEventListener('click', () => {
+        if (alarmActive) return;
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'toggle_audio' }));
+        }
+    });
+
     const ws = new WebSocket(`wss://${location.host}?role=viewer`);
     ws.binaryType = 'arraybuffer';
-    let pingPendingTs  = null;
-    let latencyMs      = null;
+
+    let pingPendingTs = null;
+    let latencyMs     = null;
 
     function sendPing() {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -678,11 +692,8 @@
         setInterval(sendPing, 2000);
     });
 
-    const connLost      = document.getElementById('conn-lost');
-    const connLostTitle = document.getElementById('conn-lost-title');
-    const connLostSub   = document.getElementById('conn-lost-sub');
     let publisherEverConnected = false;
-    let connLostTimer = null;
+    let connLostTimer          = null;
 
     function resetStats() {
         fpsFrameCount = 0;
@@ -703,15 +714,16 @@
             if (!publisherEverConnected) {
                 connLost.classList.add('never');
                 connLostTitle.textContent = '⚠ NO CONNECTION ⚠';
-                connLostSub.textContent = 'Waiting for publisher...';
+                connLostSub.textContent   = 'Waiting for publisher...';
             } else {
                 connLost.classList.remove('never');
                 connLostTitle.textContent = '⚠ CONNECTION LOST ⚠';
-                connLostSub.textContent = 'Publisher disconnected';
+                connLostSub.textContent   = 'Publisher disconnected';
             }
             connLost.classList.add('visible');
         }, 400);
     }
+
     function hideConnLost() {
         if (connLostTimer) { clearTimeout(connLostTimer); connLostTimer = null; }
         publisherEverConnected = true;
@@ -720,12 +732,6 @@
 
     ws.onclose = () => showConnLost();
     ws.onerror = () => showConnLost();
-
-    const mapWidget   = document.getElementById('map-widget');
-    const mapCoords   = document.getElementById('map-coords');
-    const mapFsEl     = document.getElementById('map-fullscreen');
-    const mapFsCoords = document.getElementById('map-fs-coords');
-    const mapFsClose  = document.getElementById('map-fs-close');
 
     const SAT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
     const SAT_OPTS  = { maxZoom: 19, attribution: '' };
@@ -811,17 +817,7 @@
         if (typeof event.data === 'string') {
             let msg;
             try { msg = JSON.parse(event.data); } catch { return; }
-            if (msg.type === 'publisher_disconnected') {
-                alarmActive = false;
-                document.getElementById('alarm-overlay').classList.remove('visible');
-                showConnLost();
-                return;
-            }
-            if (msg.type === 'torch_status') {
-                torchOn = msg.enabled;
-                torchBtn.className = torchOn ? 'on' : '';
-                return;
-            }
+
             if (msg.type === 'publisher_status') {
                 if (msg.connected) hideConnLost();
                 else {
@@ -831,76 +827,58 @@
                 }
                 return;
             }
-            if (msg.type === 'pong') {
-                if (pingPendingTs !== null) {
-                    latencyMs = Math.round(performance.now() - pingPendingTs);
-                    pingPendingTs = null;
-                    statLat.textContent = latencyMs + ' ms';
-                    statLat.className = 'stat-pill' + (latencyMs > 500 ? ' crit' : latencyMs > 200 ? ' warn' : '');
-                }
+            if (msg.type === 'publisher_disconnected') {
+                alarmActive = false;
+                document.getElementById('alarm-overlay').classList.remove('visible');
+                showConnLost();
                 return;
             }
-            if (msg.type === 'data_usage') {
-                const toMb = b => (b / 1048576).toFixed(2) + 'MB';
-                statData.textContent = `↓${toMb(msg.data_rx)} ↑${toMb(msg.data_tx)}`;
-                statData.className = 'stat-pill';
+            if (msg.type === 'pong') {
+                if (pingPendingTs !== null) {
+                    latencyMs     = Math.round(performance.now() - pingPendingTs);
+                    pingPendingTs = null;
+                    statLat.textContent = latencyMs + ' ms';
+                    statLat.className   = 'stat-pill' + (latencyMs > 500 ? ' crit' : latencyMs > 200 ? ' warn' : '');
+                }
                 return;
             }
             if (msg.type === 'viewer_count') {
                 statViewers.textContent = msg.count + ' 👁';
-                statViewers.className = 'stat-pill' + (msg.count === 0 ? ' dim' : '');
+                statViewers.className   = 'stat-pill' + (msg.count === 0 ? ' dim' : '');
+                return;
+            }
+            if (msg.type === 'battery') {
+                const level = msg.level;
+                batteryFill.style.width      = level + '%';
+                batteryFill.style.background = level <= 15 ? '#f44' : level <= 30 ? '#fa4' : '#6f6';
+                batteryLabel.textContent     = level + '%';
                 return;
             }
             if (msg.type === 'car_battery') {
                 updateCarBattery(msg.mv);
                 return;
             }
+            if (msg.type === 'wifi') {
+                updateWifi(msg.level);
+                return;
+            }
+            if (msg.type === 'cell') {
+                updateCell(msg.level);
+                return;
+            }
+            if (msg.type === 'data_usage') {
+                const toMb = b => (b / 1048576).toFixed(2) + 'MB';
+                statData.textContent = `↓${toMb(msg.data_rx)} ↑${toMb(msg.data_tx)}`;
+                statData.className   = 'stat-pill';
+                return;
+            }
             if (msg.type === 'usb_status') {
                 carBatteryUsb.textContent = msg.status;
                 return;
             }
-            if (msg.type === 'battery') {
-                const level = msg.level;
-                batteryFill.style.width = level + '%';
-                batteryFill.style.background = level <= 15 ? '#f44' : level <= 30 ? '#fa4' : '#6f6';
-                batteryLabel.textContent = level + '%';
-            }
-            if (msg.type === 'wifi') {
-                updateWifi(msg.level);
-            }
-            if (msg.type === 'cell') {
-                updateCell(msg.level);
-            }
-            if (msg.type === 'alarm_state') {
-                const wasActive = alarmActive;
-                alarmActive = msg.active;
-                document.getElementById('alarm-overlay').classList.toggle('visible', msg.active);
-                if (msg.active && !wasActive) {
-                    audioWasEnabledBeforeAlarm = audioEnabled;
-                    if (audioEnabled) {
-                        audioEnabled = false;
-                        audioCtx.close();
-                        audioCtx = null;
-                    }
-                    audioBtn.className = 'alarm-disabled';
-                } else if (!msg.active && wasActive) {
-                    if (audioWasEnabledBeforeAlarm && !audioEnabled) {
-                        setTimeout(() => {
-                            audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-                            nextPlayTime = audioCtx.currentTime;
-                            audioEnabled = true;
-                            audioBtn.className = 'on';
-                        }, 500);
-                    } else {
-                        audioBtn.className = '';
-                    }
-                    audioWasEnabledBeforeAlarm = false;
-                }
-                return;
-            }
             if (msg.type === 'gps') {
                 const { lat, lng, acc } = msg;
-                const ll = [lat, lng];
+                const ll       = [lat, lng];
                 const coordStr = lat.toFixed(5) + ', ' + lng.toFixed(5) + '  +/-' + Math.round(acc) + 'm';
                 mapWidget.style.display = 'block';
                 mapCoords.textContent   = coordStr;
@@ -916,6 +894,51 @@
                     fsMarker.setLatLng(ll);
                     fsCircle.setLatLng(ll).setRadius(acc);
                 }
+                return;
+            }
+            if (msg.type === 'audio_status') {
+                const wasEnabled = audioEnabled;
+                audioEnabled = msg.enabled;
+                if (audioEnabled && !wasEnabled) {
+                    audioCtx     = new AudioContext({ sampleRate: SAMPLE_RATE });
+                    nextPlayTime = audioCtx.currentTime;
+                    audioBtn.className = 'on';
+                } else if (!audioEnabled && wasEnabled) {
+                    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+                    audioBtn.className = '';
+                }
+                return;
+            }
+            if (msg.type === 'torch_status') {
+                torchOn = msg.enabled;
+                torchBtn.className = torchOn ? 'on' : '';
+                return;
+            }
+            if (msg.type === 'alarm_status') {
+                const wasActive = alarmActive;
+                alarmActive = msg.enabled;
+                document.getElementById('alarm-overlay').classList.toggle('visible', msg.enabled);
+                if (msg.enabled && !wasActive) {
+                    audioWasEnabledBeforeAlarm = audioEnabled;
+                    if (audioEnabled) {
+                        audioEnabled = false;
+                        audioCtx.close();
+                        audioCtx = null;
+                    }
+                    audioBtn.className = 'alarm-disabled';
+                } else if (!msg.enabled && wasActive) {
+                    if (audioWasEnabledBeforeAlarm && !audioEnabled) {
+                        setTimeout(() => {
+                            audioCtx     = new AudioContext({ sampleRate: SAMPLE_RATE });
+                            nextPlayTime = audioCtx.currentTime;
+                            audioEnabled = true;
+                            audioBtn.className = 'on';
+                        }, 500);
+                    } else {
+                        audioBtn.className = '';
+                    }
+                    audioWasEnabledBeforeAlarm = false;
+                }
             }
         }
     };
@@ -924,13 +947,6 @@
     const KEEPALIVE_MS = 100;
     const TRIM_STEP    = 0.01;
     const TRIM_MAX     = 1.0;
-
-    const statusEl  = document.getElementById('gp-status');
-    const fillSteer = document.getElementById('fill-steer');
-    const valSteer  = document.getElementById('val-steer');
-    const fillThrot = document.getElementById('fill-throttle');
-    const valThrot  = document.getElementById('val-throttle');
-    const fillTrim  = document.getElementById('fill-trim');
 
     const dz    = (v) => Math.abs(v) < DEADZONE ? 0 : v;
     const q     = (v) => Math.round(v * 1000) / 1000;
@@ -950,14 +966,13 @@
     let bPrev      = false;
     let xPrev      = false;
     let yPrev      = false;
-    let alarmActive = false;
 
     setInterval(() => {
         const pad = activePad();
 
         if (!pad) {
             if (statusEl.className) {
-                statusEl.className = '';
+                statusEl.className   = '';
                 statusEl.textContent = 'Gamepad: none';
             }
             const payload = '{"type":"gamepad","connected":false}';
@@ -972,7 +987,7 @@
         const dpadRight = !!(pad.buttons[15]?.pressed);
         if (dpadLeft  && !dpadPrev[0]) steerTrim = clamp(steerTrim - TRIM_STEP, -TRIM_MAX, TRIM_MAX);
         if (dpadRight && !dpadPrev[1]) steerTrim = clamp(steerTrim + TRIM_STEP, -TRIM_MAX, TRIM_MAX);
-        dpadPrev = [dpadLeft, dpadRight];
+        dpadPrev  = [dpadLeft, dpadRight];
         steerTrim = q(steerTrim);
 
         const aPressed = !!(pad.buttons[0]?.pressed);
@@ -1009,11 +1024,11 @@
         const throttle = q(Math.max(-1, Math.min(1, r2 - l2)));
 
         if (!statusEl.className) {
-            statusEl.className = 'on';
+            statusEl.className   = 'on';
             statusEl.textContent = 'Gamepad: ' + pad.id;
         }
-        const rawPct   = clamp(rawSteer * 50, -50 - steerTrim * 50, 50 - steerTrim * 50);
-        const trimPct  = steerTrim * 50;
+        const rawPct  = clamp(rawSteer * 50, -50 - steerTrim * 50, 50 - steerTrim * 50);
+        const trimPct = steerTrim * 50;
         fillSteer.style.left  = rawSteer < 0 ? (50 + rawPct) + '%' : '50%';
         fillSteer.style.width = Math.abs(rawPct) + '%';
         const trimStart = 50 + rawPct;
