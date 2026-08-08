@@ -17,7 +17,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ## Features
 
 ### Live Video Streaming
-- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (640×480, 4 Mbps CBR, 30 fps, Baseline profile Level 3.1).
+- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 4 Mbps VBR, 30 fps, Baseline profile Level 3.1).
 - The encoder is configured with `KEY_I_FRAME_INTERVAL = 0`, `KEY_LATENCY = 0`, and `KEY_PRIORITY = 0` for low-latency output; setting the I-frame interval to 0 requests a keyframe on every frame, maximising seek-ability and decoder recovery. The SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR. Encoder output frames are dropped if the WebSocket send queue exceeds 80 KB, preventing buffer bloat under poor network conditions.
 - Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
 - The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
