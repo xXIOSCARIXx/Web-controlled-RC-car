@@ -655,8 +655,8 @@ class MainService : LifecycleService() {
                 if (!isStreaming || lifecycle.currentState == Lifecycle.State.DESTROYED) return@addListener
                 cameraProvider = try { providerFuture.get() } catch (_: Exception) { return@addListener }
 
-                encoderWidth = 640
-                encoderHeight = 480
+                encoderWidth = 960
+                encoderHeight = 720
                 initVideoEncoder(encoderWidth, encoderHeight)
 
                 val surface = inputSurface ?: return@addListener
@@ -710,7 +710,7 @@ class MainService : LifecycleService() {
                 format.setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
-                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
 
                 format.setInteger(MediaFormat.KEY_LATENCY, 0)
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
