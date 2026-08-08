@@ -242,13 +242,52 @@ class MainService : LifecycleService() {
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var locationFilter: LocationFilter
+    private var currentBestLocation: Location? = null
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc: Location = result.lastLocation ?: return
-            val ws = webSocket ?: return
-            val payload = """{"type":"gps","lat":${loc.latitude},"lng":${loc.longitude},"acc":${loc.accuracy}}"""
-            ws.send(payload)
+            if (isBetterLocation(loc, currentBestLocation)) {
+                currentBestLocation = loc
+                val filteredLoc = locationFilter.filter(loc)
+                val ws = webSocket ?: return
+                val payload = """{"type":"gps","lat":${filteredLoc.latitude},"lng":${filteredLoc.longitude},"acc":${filteredLoc.accuracy}}"""
+                ws.send(payload)
+            }
         }
+    }
+
+    private fun isBetterLocation(location: Location, currentBestLocation: Location?): Boolean {
+        if (currentBestLocation == null) {
+            return true
+        }
+
+        val timeDelta: Long = location.time - currentBestLocation.time
+        val isSignificantlyNewer: Boolean = timeDelta > TWO_MINUTES
+        val isSignificantlyOlder: Boolean = timeDelta < -TWO_MINUTES
+        val isNewer: Boolean = timeDelta > 0
+
+        if (isSignificantlyNewer) {
+            return true
+        } else if (isSignificantlyOlder) {
+            return false
+        }
+
+        val accuracyDelta: Int = (location.accuracy - currentBestLocation.accuracy).toInt()
+        val isLessAccurate: Boolean = accuracyDelta > 0
+        val isMoreAccurate: Boolean = accuracyDelta < 0
+        val isSignificantlyLessAccurate: Boolean = accuracyDelta > 200
+
+        val isFromSameProvider: Boolean = location.provider == currentBestLocation.provider
+
+        if (isMoreAccurate) {
+            return true
+        } else if (isNewer && !isLessAccurate) {
+            return true
+        } else if (isNewer && !isSignificantlyLessAccurate && isFromSameProvider) {
+            return true
+        }
+        return false
     }
 
     private var cameraProvider: ProcessCameraProvider? = null
@@ -317,6 +356,7 @@ class MainService : LifecycleService() {
         }
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        locationFilter = LocationFilter()
 
         val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -601,8 +641,9 @@ class MainService : LifecycleService() {
 
     @SuppressLint("MissingPermission")
     private fun startLocationUpdates() {
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
             .setMinUpdateIntervalMillis(1000L)
+            .setWaitForAccurateLocation(true)
             .build()
         fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
     }
@@ -614,8 +655,8 @@ class MainService : LifecycleService() {
                 if (!isStreaming || lifecycle.currentState == Lifecycle.State.DESTROYED) return@addListener
                 cameraProvider = try { providerFuture.get() } catch (_: Exception) { return@addListener }
 
-                encoderWidth = 960
-                encoderHeight = 720
+                encoderWidth = 640
+                encoderHeight = 480
                 initVideoEncoder(encoderWidth, encoderHeight)
 
                 val surface = inputSurface ?: return@addListener
@@ -666,7 +707,7 @@ class MainService : LifecycleService() {
             try {
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                format.setInteger(MediaFormat.KEY_BIT_RATE, 1_500_000)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
                 format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
@@ -683,7 +724,7 @@ class MainService : LifecycleService() {
                         override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
                     override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                         val ws = webSocket
-                        if ((ws == null) || (ws.queueSize() > 32_000)) {
+                        if ((ws == null) || (ws.queueSize() > 80_000)) {
                             codec.releaseOutputBuffer(index, false)
                             return
                         }
@@ -973,6 +1014,7 @@ class MainService : LifecycleService() {
     }
 
     companion object {
+        const val TWO_MINUTES = 1000 * 60 * 2
         const val CHANNEL_ID = "scout_service"
         const val NOTIFICATION_ID = 1
         const val ACTION_USB_PERMISSION = "com.shadowscoutx.USB_PERMISSION"
