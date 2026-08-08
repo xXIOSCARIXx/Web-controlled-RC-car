@@ -17,8 +17,8 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 ## Features
 
 ### Live Video Streaming
-- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (960×720, 2 Mbps VBR, 30 fps, Baseline profile Level 3.1).
-- The encoder is configured with `KEY_I_FRAME_INTERVAL = 2`, `KEY_LATENCY = 0`, and `KEY_PRIORITY = 0` for low-latency output; the SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR. Encoder output frames are dropped if the WebSocket send queue exceeds 128 KB, preventing buffer bloat under poor network conditions.
+- Camera frames are captured via CameraX and encoded in real time to **H.264/AVC** using Android's `MediaCodec` hardware encoder (640×480, 4 Mbps CBR, 30 fps, Baseline profile Level 3.1).
+- The encoder is configured with `KEY_I_FRAME_INTERVAL = 0`, `KEY_LATENCY = 0`, and `KEY_PRIORITY = 0` for low-latency output; setting the I-frame interval to 0 requests a keyframe on every frame, maximising seek-ability and decoder recovery. The SPS/PPS config buffer is prepended to each IDR frame before it is sent, making every keyframe self-contained and enabling a viewer to start decoding from any IDR. Encoder output frames are dropped if the WebSocket send queue exceeds 80 KB, preventing buffer bloat under poor network conditions.
 - Encoded NAL units are prefixed with a `0x02` type byte and sent as binary WebSocket frames.
 - The browser decodes the H.264 stream using the **WebCodecs `VideoDecoder` API** and renders frames onto a full-window canvas.
 - Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`). When using the rear camera, both optical stabilization (`LENS_OPTICAL_STABILIZATION_MODE_ON`) and video stabilization (`CONTROL_VIDEO_STABILIZATION_MODE_ON`) are enabled; stabilization is skipped for the front camera. Auto-exposure is held at `CONTROL_AE_MODE_ON` with a target FPS range of 24–30, and exposure compensation is set to +1 EV.
@@ -48,7 +48,8 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - `play_honk` / `stop_honk` messages are forwarded by the relay server to the Android app, which plays or stops a looping `MediaPlayer` instance independently of the alarm.
 
 ### GPS Tracking
-- Uses Google's Fused Location Provider for high-accuracy GPS with a preferred 2-second update interval and a minimum 1-second interval.
+- Uses Google's Fused Location Provider for high-accuracy GPS with a 1-second update interval (both preferred and minimum), and `setWaitForAccurateLocation(true)` to suppress the initial coarse fix.
+- Each location fix passes through a **Kalman filter** (`LocationFilter`) that smooths latitude, longitude, and altitude independently. The filter uses a very small process noise (`q = 1e-7` for lat/lon, `100×` higher for altitude) so it tracks genuine movement but suppresses GPS jitter; the measurement noise is derived from the fix's reported accuracy radius.
 - Coordinates and accuracy are streamed as JSON to the relay server and forwarded to all viewers in real time.
 - The viewer displays a live satellite map (Leaflet.js + Esri World Imagery tiles) in the bottom-right corner with a position marker and an accuracy radius circle.
 - Clicking the mini-map expands it to a full-screen interactive map (press Escape or the close button to return).
