@@ -24,6 +24,7 @@ As long as the phone has mobile data or Wi-Fi, the car has effectively unlimited
 - Camera is locked to **fixed focus** (`CONTROL_AF_MODE_OFF`, `LENS_FOCUS_DISTANCE = 0.0`). When using the rear camera, both optical stabilization (`LENS_OPTICAL_STABILIZATION_MODE_ON`) and video stabilization (`CONTROL_VIDEO_STABILIZATION_MODE_ON`) are enabled; stabilization is skipped for the front camera. Auto-exposure is held at `CONTROL_AE_MODE_ON` with a target FPS range of 24–30, and exposure compensation is set to +1 EV.
 - Supports switching between front and rear cameras mid-stream via a gamepad button or the viewer UI. When the camera is switched, the torch is automatically disabled (torch is only available on the rear camera).
 - Camera capture and audio recording only start when at least one viewer is connected; they stop automatically when all viewers disconnect, saving power and resources.
+- The video stream consumes approximately **1.5 GB per hour** on mobile data.
 
 
 ### Live Audio Streaming
