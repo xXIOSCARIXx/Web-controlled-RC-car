@@ -90,9 +90,13 @@ class MainService : LifecycleService() {
         override fun onReceive(context: Context, intent: Intent) {
             val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+
             if ((level != -1) && (scale != -1)) {
                 val pct = ((level * 100f) / scale).roundToInt()
-                webSocket?.send("""{"type":"battery","level":$pct}""")
+                webSocket?.send("""{"type":"battery","level":$pct,"charging":$isCharging}""")
             }
         }
     }
@@ -470,9 +474,13 @@ class MainService : LifecycleService() {
                         val batteryStatus = registerReceiver(null, filter)
                         val bLevel = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
                         val bScale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+                        val bStatus = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+                        val isCharging = bStatus == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                bStatus == BatteryManager.BATTERY_STATUS_FULL
+
                         if ((bLevel != -1) && (bScale != -1)) {
                             val pct = ((bLevel * 100f) / bScale).roundToInt()
-                            webSocket.send("""{"type":"battery","level":$pct}""")
+                            webSocket.send("""{"type":"battery","level":$pct,"charging":$isCharging}""")
                         }
                         
                         updateSignalInfo()
