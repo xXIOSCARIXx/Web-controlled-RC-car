@@ -206,6 +206,7 @@
             width: 0;
             border-radius: 2px;
             background: #6f6;
+            transform-origin: left;
             transition: width 0.4s ease, background 0.4s ease;
         }
         #battery-label {
@@ -219,6 +220,15 @@
             text-shadow: none;
             z-index: 1;
         }
+        @keyframes charging-fill {
+            0%   { transform: scaleX(0); }
+            100% { transform: scaleX(1); }
+        }
+        #battery-fill.charging {
+            animation: charging-fill 1.5s ease-in-out infinite;
+            transition: background 0.4s ease;
+        }
+
         #car-battery-voltage {
             font: bold 22px/1 monospace;
             color: #6f6;
@@ -598,7 +608,7 @@
             decoderSeenKeyframe = true;
         }
 
-        if (videoDecoder.decodeQueueSize > 1 && !hasIDR) return;
+        if (videoDecoder.decodeQueueSize > 2) return;
 
         try {
             videoDecoder.decode(new EncodedVideoChunk({
@@ -629,13 +639,27 @@
         src.buffer = buf;
         src.connect(audioCtx.destination);
         const now = audioCtx.currentTime;
-        if (nextPlayTime < now) nextPlayTime = now + 0.05;
+        if (nextPlayTime < now) nextPlayTime = now + 0.02;
         src.start(nextPlayTime);
         nextPlayTime += buf.duration;
     }
 
     let alarmActive                = false;
     let audioWasEnabledBeforeAlarm = false;
+
+    function updateBattery(level, charging) {
+        batteryFill.style.width      = level + '%';
+        batteryFill.style.background = level <= 15 ? '#f44' : level <= 30 ? '#fa4' : '#6f6';
+        batteryLabel.textContent = (level >= 100 && charging) ? 'Full' : level + '%';
+
+        if (charging && level < 100) {
+            batteryFill.classList.add('charging');
+        } else if (batteryFill.classList.contains('charging')) {
+            batteryFill.addEventListener('animationiteration', () => {
+                batteryFill.classList.remove('charging');
+            }, { once: true });
+        }
+    }
 
     function updateCarBattery(mv) {
         const v = mv / 1000;
@@ -848,10 +872,7 @@
                 return;
             }
             if (msg.type === 'battery') {
-                const level = msg.level;
-                batteryFill.style.width      = level + '%';
-                batteryFill.style.background = level <= 15 ? '#f44' : level <= 30 ? '#fa4' : '#6f6';
-                batteryLabel.textContent     = level + '%';
+                updateBattery(msg.level, msg.charging);
                 return;
             }
             if (msg.type === 'car_battery') {
