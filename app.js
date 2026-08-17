@@ -17,7 +17,7 @@ if (!fs.existsSync(KEY_PATH) || !fs.existsSync(CRT_PATH)) {
     fs.mkdirSync(SSL_DIR, { recursive: true });
     execSync(
         `openssl req -x509 -newkey rsa:4096 -keyout "${KEY_PATH}" -out "${CRT_PATH}" ` +
-        `-days 3650 -nodes -subj "/CN=shadowscout"`,
+        `-days 3650 -nodes -subj "/CN=roverlink"`,
         { stdio: 'inherit' }
     );
     execSync(`openssl x509 -in "${CRT_PATH}" -out "${CER_PATH}" -outform DER`);
@@ -82,8 +82,8 @@ function stopPublisherHeartbeat(ws) {
 
 pubWss.on('connection', (ws, _req) => {
     if (publisher && publisher.readyState === WebSocket.OPEN) {
-        stopPublisherHeartbeat(publisher);
-        publisher.close(1000, 'replaced');
+        ws.close(1008, 'publisher already connected');
+        return;
     }
     publisher = ws;
     console.log('Publisher connected from', _req.socket.remoteAddress?.replace('::ffff:', ''));

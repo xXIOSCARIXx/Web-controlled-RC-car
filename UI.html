@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>ShadowScoutX Live</title>
+    <title>RoverLink UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
@@ -471,7 +471,7 @@
 </div>
 <div id="stats-overlay">
     <div class="stat-pill dim" id="stat-fps">-- FPS</div>
-    <div class="stat-pill dim" id="stat-lat">-- ms</div>
+    <div class="stat-pill dim" id="stat-lat">-- MS</div>
     <div class="stat-pill dim" id="stat-data">↓-- ↑--</div>
     <div class="stat-pill dim" id="stat-viewers">0 👁</div>
 </div>
@@ -726,7 +726,7 @@
         pingPendingTs = null;
         statFps.textContent = '-- FPS';
         statFps.className   = 'stat-pill dim';
-        statLat.textContent = '-- ms';
+        statLat.textContent = '-- MS';
         statLat.className   = 'stat-pill dim';
     }
 
@@ -861,7 +861,7 @@
                 if (pingPendingTs !== null) {
                     latencyMs     = Math.round(performance.now() - pingPendingTs);
                     pingPendingTs = null;
-                    statLat.textContent = latencyMs + ' ms';
+                    statLat.textContent = latencyMs + ' MS';
                     statLat.className   = 'stat-pill' + (latencyMs > 500 ? ' crit' : latencyMs > 200 ? ' warn' : '');
                 }
                 return;
