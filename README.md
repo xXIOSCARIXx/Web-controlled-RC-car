@@ -1,4 +1,4 @@
-# ShadowScoutX
+# RoverLink
 
 A hobby RC car project that turns an Android phone into an onboard FPV (first-person view) unit. The phone streams live H.264 video, audio, GPS position, and telemetry to a browser dashboard, and a gamepad connected to the browser drives the car in real time via a USB-connected Arduino.
 
