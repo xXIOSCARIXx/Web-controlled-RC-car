@@ -417,7 +417,10 @@
     </div>
     <div id="bar-throttle" class="bar-row">
         <span>Throt</span>
-        <div class="bar-track"><div class="bar-fill" id="fill-throttle"></div></div>
+        <div class="bar-track">
+            <div class="bar-fill" id="fill-throttle"></div>
+            <div class="bar-fill" id="fill-throttle-trim" style="background:#f44;"></div>
+        </div>
         <em id="val-throttle">0.00</em>
     </div>
 </div>
@@ -496,12 +499,13 @@
     const audioBtn = document.getElementById('audio-btn');
     const torchBtn = document.getElementById('torch-btn');
 
-    const statusEl  = document.getElementById('gp-status');
-    const fillSteer = document.getElementById('fill-steer');
-    const fillTrim  = document.getElementById('fill-trim');
-    const fillThrot = document.getElementById('fill-throttle');
-    const valSteer  = document.getElementById('val-steer');
-    const valThrot  = document.getElementById('val-throttle');
+    const statusEl       = document.getElementById('gp-status');
+    const fillSteer      = document.getElementById('fill-steer');
+    const fillTrim       = document.getElementById('fill-trim');
+    const fillThrot      = document.getElementById('fill-throttle');
+    const fillThrotTrim  = document.getElementById('fill-throttle-trim');
+    const valSteer       = document.getElementById('val-steer');
+    const valThrot       = document.getElementById('val-throttle');
 
     const mapWidget   = document.getElementById('map-widget');
     const mapCoords   = document.getElementById('map-coords');
@@ -535,7 +539,7 @@
         fpsFrameCount = 0;
         fpsLastTime   = now;
 
-        statFps.textContent = currentFps + ' FPS';
+        statFps.textContent = currentFps === 0 ? '-- FPS' : currentFps + ' FPS';
         const fpsBad  = currentFps < 15;
         const fpsWarn = currentFps < 24;
         statFps.className = 'stat-pill' + (currentFps === 0 ? ' dim' : fpsBad ? ' crit' : fpsWarn ? ' warn' : '');
@@ -979,14 +983,15 @@
         return null;
     };
 
-    let lastJSON   = '';
-    let lastSentAt = 0;
-    let steerTrim  = 0;
-    let dpadPrev   = [false, false];
-    let aPrev      = false;
-    let bPrev      = false;
-    let xPrev      = false;
-    let yPrev      = false;
+    let lastJSON      = '';
+    let lastSentAt    = 0;
+    let steerTrim     = 0;
+    let throttleTrim  = 0;
+    let dpadPrev      = [false, false, false, false];
+    let aPrev         = false;
+    let bPrev         = false;
+    let xPrev         = false;
+    let yPrev         = false;
 
     setInterval(() => {
         const pad = activePad();
@@ -1006,10 +1011,17 @@
 
         const dpadLeft  = !!(pad.buttons[14]?.pressed);
         const dpadRight = !!(pad.buttons[15]?.pressed);
-        if (dpadLeft  && !dpadPrev[0]) steerTrim = clamp(steerTrim - TRIM_STEP, -TRIM_MAX, TRIM_MAX);
-        if (dpadRight && !dpadPrev[1]) steerTrim = clamp(steerTrim + TRIM_STEP, -TRIM_MAX, TRIM_MAX);
-        dpadPrev  = [dpadLeft, dpadRight];
-        steerTrim = q(steerTrim);
+        const dpadUp    = !!(pad.buttons[12]?.pressed);
+        const dpadDown  = !!(pad.buttons[13]?.pressed);
+
+        if (dpadLeft  && !dpadPrev[0]) steerTrim    = clamp(steerTrim    - TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+        if (dpadRight && !dpadPrev[1]) steerTrim    = clamp(steerTrim    + TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+        if (dpadUp    && !dpadPrev[2]) throttleTrim = clamp(throttleTrim + TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+        if (dpadDown  && !dpadPrev[3]) throttleTrim = clamp(throttleTrim - TRIM_STEP, -TRIM_MAX, TRIM_MAX);
+
+        dpadPrev     = [dpadLeft, dpadRight, dpadUp, dpadDown];
+        steerTrim    = q(steerTrim);
+        throttleTrim = q(throttleTrim);
 
         const aPressed = !!(pad.buttons[0]?.pressed);
         if (aPressed && !aPrev && ws.readyState === WebSocket.OPEN) {
@@ -1038,16 +1050,23 @@
         }
         yPrev = yPressed;
 
-        const rawSteer = q(dz(pad.axes[0] ?? 0));
-        const steer    = q(clamp(rawSteer + steerTrim, -1, 1));
-        const l2       = q(pad.buttons[6]?.value ?? 0);
-        const r2       = q(pad.buttons[7]?.value ?? 0);
-        const throttle = q(Math.max(-1, Math.min(1, r2 - l2)));
+        const rawSteerRight = q(dz(pad.axes[2] ?? 0));
+        const rawSteerLeft  = q(dz(pad.axes[0] ?? 0) * 0.5);
+        const rawSteer      = q(clamp(rawSteerRight + rawSteerLeft, -1, 1));
+        const steer         = q(clamp(rawSteer + steerTrim, -1, 1));
+        const l2            = q(pad.buttons[6]?.value ?? 0);
+        const r2            = q(pad.buttons[7]?.value ?? 0);
+        const rawThrottle   = q(Math.max(-1, Math.min(1, r2 - l2)));
+        const throttle      = q(clamp(rawThrottle + throttleTrim, -1, 1));
+
+        const tR2 = throttle > 0 ? throttle : 0;
+        const tL2 = throttle < 0 ? -throttle : 0;
 
         if (!statusEl.className) {
             statusEl.className   = 'on';
             statusEl.textContent = 'Gamepad: ' + pad.id;
         }
+
         const rawPct  = clamp(rawSteer * 50, -50 - steerTrim * 50, 50 - steerTrim * 50);
         const trimPct = steerTrim * 50;
         fillSteer.style.left  = rawSteer < 0 ? (50 + rawPct) + '%' : '50%';
@@ -1056,8 +1075,14 @@
         fillTrim.style.left  = trimPct >= 0 ? trimStart + '%' : (trimStart + trimPct) + '%';
         fillTrim.style.width = Math.abs(trimPct) + '%';
         valSteer.textContent  = steer.toFixed(2);
-        fillThrot.style.left  = throttle < 0 ? (50 + throttle * 50) + '%' : '50%';
-        fillThrot.style.width = Math.abs(throttle) * 50 + '%';
+
+        const rawThrotPct  = clamp(rawThrottle * 50, -50 - throttleTrim * 50, 50 - throttleTrim * 50);
+        const throtTrimPct = throttleTrim * 50;
+        fillThrot.style.left  = rawThrottle < 0 ? (50 + rawThrotPct) + '%' : '50%';
+        fillThrot.style.width = Math.abs(rawThrotPct) + '%';
+        const throtTrimStart = 50 + rawThrotPct;
+        fillThrotTrim.style.left  = throtTrimPct >= 0 ? throtTrimStart + '%' : (throtTrimStart + throtTrimPct) + '%';
+        fillThrotTrim.style.width = Math.abs(throtTrimPct) + '%';
         valThrot.textContent  = throttle.toFixed(2);
 
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -1069,7 +1094,7 @@
             id: pad.id,
             mapping: pad.mapping,
             axes: Array.from(pad.axes, (v, i) => i === 0 ? steer : 0),
-            buttons: pad.buttons.map((b, i) => i === 6 ? l2 : i === 7 ? r2 : 0),
+            buttons: pad.buttons.map((b, i) => i === 6 ? tL2 : i === 7 ? tR2 : 0),
             pressed: [],
         });
 

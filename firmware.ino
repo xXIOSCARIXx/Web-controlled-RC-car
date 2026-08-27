@@ -4,15 +4,13 @@ const int STEER_PIN = 10;
 const int ESC_PIN = 9;
 const int BAT_PIN = A0;
 
-const int STEER_CENTER_US = 1500;
+const int STEER_CENTER_US = 1580;
 const int ESC_NEUTRAL_US = 1500;
 
 const unsigned long COMMAND_TIMEOUT = 500;
 const unsigned long ARM_HOLD_MS = 2000;
 const unsigned long BAT_INTERVAL = 500;
 
-const float STEERING_EXPO = 0.80f;
-const float THROTTLE_EXPO = 0.0f;
 const float ESC_FORWARD_LIMIT = 0.25f;
 const float ESC_BRAKE_LIMIT = 0.55f;
 const float BAT_CALIBRATION = 0.994f;
@@ -30,13 +28,8 @@ unsigned long armHoldStart = 0;
 unsigned long lastCommandTime = 0;
 unsigned long lastBatSend = 0;
 
-float applyExpo(float x, float expo) {
-  return (1.0f - expo) * x + expo * x * x * x;
-}
-
-int applyExpoToPWM(byte input, bool reverse, float expo, float forwardLimit, float brakeLimit, int centerUs) {
+int linearToPWM(byte input, bool reverse, float forwardLimit, float brakeLimit, int centerUs) {
   float x = ((float)input - 127.5f) / 127.5f;
-  x = applyExpo(x, expo);
 
   if (reverse) x = -x;
 
@@ -138,20 +131,18 @@ void readCommands() {
 
       lastCommandTime = millis();
 
-      steerTargetUs = applyExpoToPWM(
+      steerTargetUs = linearToPWM(
         steerByte,
         true,
-        STEERING_EXPO,
         1.0f,
         1.0f,
         STEER_CENTER_US
       );
 
       if (escArmed) {
-        escTargetUs = applyExpoToPWM(
+        escTargetUs = linearToPWM(
           throttleByte,
           false,
-          THROTTLE_EXPO,
           ESC_FORWARD_LIMIT,
           ESC_BRAKE_LIMIT,
           ESC_NEUTRAL_US
